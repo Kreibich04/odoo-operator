@@ -110,6 +110,23 @@ type RedisSpec struct {
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
 }
 
+// MasterKeySpec defines the Odoo database manager master password (admin_passwd).
+// This key protects the /web/database/manager endpoints (create, duplicate, backup, restore,
+// drop database). It is unrelated to individual user login passwords.
+type MasterKeySpec struct {
+	// Value sets the master key literally in the resource spec. Kept for backwards
+	// compatibility. Since this ends up in the (unencrypted) generated ConfigMap, prefer
+	// SecretRef instead.
+	// +optional
+	Value string `json:"value,omitempty"`
+
+	// SecretRef is the name of a secret containing the master key under the 'masterkey' key.
+	// If neither Value nor SecretRef is set, the operator generates a random master key and
+	// stores it in a secret named "<odoo-name>-masterkey".
+	// +optional
+	SecretRef string `json:"secretRef,omitempty"`
+}
+
 // OdooSpec defines the desired state of Odoo
 
 type OdooSpec struct {
@@ -142,6 +159,21 @@ type OdooSpec struct {
 	// The secret must contain the keys: 'user', 'password', and 'dbname'.
 	// +optional
 	DatabaseSecretName string `json:"databaseSecretName,omitempty"`
+
+	// MasterKey configures the Odoo database manager master password (admin_passwd).
+	// If not set, a random one is generated and stored in a secret.
+	// +optional
+	MasterKey MasterKeySpec `json:"masterKey,omitempty"`
+
+	// AllowDatabaseManager controls Odoo's list_db setting, which exposes the database
+	// manager (/web/database/manager, /web/database/selector). When the manager is exposed,
+	// it can create, duplicate, backup, restore, and drop databases, guarded only by the
+	// master key (see MasterKey). Defaults to false: list_db is set to False, and those
+	// routes 404 regardless of how Odoo is reached (Ingress, LoadBalancer, NodePort, ...).
+	// Note this does not gate the underlying db-service RPC methods (e.g. via /jsonrpc or
+	// /xmlrpc/2/db), which remain protected only by the master key either way.
+	// +optional
+	AllowDatabaseManager bool `json:"allowDatabaseManager,omitempty"`
 
 	// Logs defines the logging configuration.
 	// +optional
