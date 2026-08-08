@@ -73,6 +73,18 @@ metrics:
 # [PROMETHEUS]: To enable a ServiceMonitor to export metrics to Prometheus set true
 prometheus:
   enable: false
+  # podMonitor optionally deploys a PodMonitor (requires the Prometheus Operator CRDs) that
+  # scrapes workload metrics directly by pod, independent of the operator's own ServiceMonitor
+  # above. It targets any pod with a container port literally named "metrics" and the "app: odoo"
+  # label -- exactly the postgres_exporter/redis_exporter sidecars added via an Odoo CR's
+  # spec.metrics (see api/v1alpha1's MetricsSpec), across every Odoo instance this operator
+  # manages. Off by default since it requires those CRDs to already be installed.
+  podMonitor:
+    enable: false
+    # namespaces restricts which namespaces are scraped. Leave empty to scrape any namespace
+    # (sensible for a cluster-wide operator); set it to match rbac.watchNamespaces above if this
+    # operator instance is namespace-scoped.
+    namespaces: []
 
 # [CERT-MANAGER]: To enable cert-manager injection to webhooks set true
 certmanager:
