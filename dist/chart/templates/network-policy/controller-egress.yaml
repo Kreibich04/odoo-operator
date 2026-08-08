@@ -1,0 +1,33 @@
+{{- if and .Values.networkPolicy.enable .Values.networkPolicy.controllerEgress.enable }}
+# This NetworkPolicy restricts the controller-manager pod's own egress traffic to DNS, the
+# Kubernetes API server, and anything configured in networkPolicy.controllerEgress.extraEgress --
+# instead of the unrestricted-by-default egress every pod otherwise has.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  labels:
+    {{- include "chart.labels" . | nindent 4 }}
+  name: operator-controller-egress
+  namespace: {{ .Release.Namespace }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "chart.selectorLabels" . | nindent 6 }}
+      control-plane: controller-manager
+  policyTypes:
+    - Egress
+  egress:
+    - ports:
+        - port: {{ .Values.networkPolicy.controllerEgress.dnsPort }}
+          protocol: UDP
+        - port: {{ .Values.networkPolicy.controllerEgress.dnsPort }}
+          protocol: TCP
+    - ports:
+        {{- range .Values.networkPolicy.controllerEgress.apiServerPorts }}
+        - port: {{ . }}
+          protocol: TCP
+        {{- end }}
+    {{- with .Values.networkPolicy.controllerEgress.extraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end -}}

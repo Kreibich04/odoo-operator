@@ -81,3 +81,18 @@ certmanager:
 # [NETWORK POLICIES]: To enable NetworkPolicies set true
 networkPolicy:
   enable: false
+  # controllerEgress additionally restricts the controller-manager pod's own egress traffic
+  # (instead of just the existing metrics-ingress policy) to DNS, the Kubernetes API server, and
+  # anything listed in extraEgress. Off by default since the exact apiserver reachability
+  # (ClusterIP vs. node port, which ports) varies by cluster; enable and tune once you know your
+  # cluster's topology.
+  controllerEgress:
+    enable: false
+    dnsPort: 53
+    apiServerPorts:
+      - 443
+      - 6443
+    # extraEgress is a raw passthrough list of additional NetworkPolicyEgressRule entries
+    # (https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.34/#networkpolicyegressrule-v1-networking-k8s-io),
+    # for anything else the controller needs to reach (a webhook, an OIDC provider, ...).
+    extraEgress: []
