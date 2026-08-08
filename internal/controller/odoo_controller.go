@@ -2085,13 +2085,18 @@ func (r *OdooReconciler) ingressForOdoo(odoo *odoov1alpha1.Odoo) *networkingv1.I
 		ingressClassName = *odoo.Spec.Ingress.IngressClassName
 	}
 
-	// Define default annotations
-	annotations := map[string]string{
-		"nginx.ingress.kubernetes.io/proxy-read-timeout":       "720s",
-		"nginx.ingress.kubernetes.io/proxy-send-timeout":       "720s",
-		"nginx.ingress.kubernetes.io/proxy-body-size":          "512m",
-		"nginx.ingress.kubernetes.io/ssl-redirect":             "true",
-		"nginx.ingress.kubernetes.io/proxy-max-temp-file-size": "2048m",
+	// Default annotations only make sense for the nginx ingress controller; seeding
+	// them regardless of ingressClassName pollutes GKE/ALB/Traefik/Contour Ingresses
+	// with annotations they don't understand.
+	annotations := map[string]string{}
+	if ingressClassName == "nginx" {
+		annotations = map[string]string{
+			"nginx.ingress.kubernetes.io/proxy-read-timeout":       "720s",
+			"nginx.ingress.kubernetes.io/proxy-send-timeout":       "720s",
+			"nginx.ingress.kubernetes.io/proxy-body-size":          "512m",
+			"nginx.ingress.kubernetes.io/ssl-redirect":             "true",
+			"nginx.ingress.kubernetes.io/proxy-max-temp-file-size": "2048m",
+		}
 	}
 
 	// Merge with annotations from the CR, with CR annotations taking precedence
