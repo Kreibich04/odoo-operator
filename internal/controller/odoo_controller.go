@@ -278,6 +278,27 @@ func (r *OdooReconciler) reconcileDatabase(ctx context.Context, odoo *odoov1alph
 	return dbHost, secretName, nil, nil
 }
 
+// resolveDatabaseConnection returns the DB host and credentials-secret name for an
+// Odoo CR without any side effects (no creates/reads beyond the CR itself). It mirrors
+// the derivation in reconcileDatabase; kept separate rather than shared since
+// reconcileDatabase also creates the managed Postgres secret/PVC/service/statefulset,
+// which callers like OdooBackup must not trigger.
+func resolveDatabaseConnection(odoo *odoov1alpha1.Odoo) (dbHost, secretName string, err error) {
+	if odoo.Spec.Database.Host != "" {
+		if odoo.Spec.DatabaseSecretName == "" {
+			return "", "", fmt.Errorf("databaseSecretName must be provided when using an external database")
+		}
+		return odoo.Spec.Database.Host, odoo.Spec.DatabaseSecretName, nil
+	}
+
+	dbHost = fmt.Sprintf("%s-postgres-svc.%s.svc.cluster.local", odoo.Name, odoo.Namespace)
+	secretName = odoo.Spec.DatabaseSecretName
+	if secretName == "" {
+		secretName = odoo.Name + "-postgres-secret"
+	}
+	return dbHost, secretName, nil
+}
+
 // reconcileRedis manages the Redis instance for session storage.
 // It returns the Redis host, port, password (if any), and any reconciliation result/error.
 func (r *OdooReconciler) reconcileRedis(ctx context.Context, odoo *odoov1alpha1.Odoo) (string, int32, string, *ctrl.Result, error) {
