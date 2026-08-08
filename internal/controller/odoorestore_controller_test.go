@@ -79,38 +79,19 @@ var _ = Describe("OdooRestore Controller", func() {
 			}
 		})
 
-		It("should successfully reconcile the resource", func() {
+		It("should report NotImplemented and create no Job", func() {
 			By("Reconciling the created resource")
 			controllerReconciler := &OdooRestoreReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 			}
 
-			// First reconciliation: Create Job
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Check that the Restore Job was created
-			job := &batchv1.Job{}
-			jobKey := types.NamespacedName{Name: resourceName + "-job", Namespace: "default"}
-			Eventually(func() error {
-				return k8sClient.Get(ctx, jobKey, job)
-			}, "10s", "1s").Should(Succeed(), "should create the restore job")
-
-			// Simulate Job completion
-			By("Simulating the completion of the Restore Job")
-			job.Status.Succeeded = 1
-			Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())
-
-			// Second reconciliation: Update status
-			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: typeNamespacedName,
-			})
-			Expect(err).NotTo(HaveOccurred())
-
-			// Verify status
+			// Verify status reflects NotImplemented, not a fake success
 			updatedRestore := &odoov1alpha1.OdooRestore{}
 			Eventually(func() bool {
 				err := k8sClient.Get(ctx, typeNamespacedName, updatedRestore)
@@ -120,8 +101,16 @@ var _ = Describe("OdooRestore Controller", func() {
 				if len(updatedRestore.Status.Conditions) == 0 {
 					return false
 				}
-				return updatedRestore.Status.Conditions[len(updatedRestore.Status.Conditions)-1].Type == conditionCompleted
-			}, "10s", "1s").Should(BeTrue(), "should update status to Completed")
+				last := updatedRestore.Status.Conditions[len(updatedRestore.Status.Conditions)-1]
+				return last.Type == "Ready" && last.Status == metav1.ConditionFalse && last.Reason == "NotImplemented"
+			}, "10s", "1s").Should(BeTrue(), "should report a NotImplemented condition")
+
+			// No Job should ever be created
+			job := &batchv1.Job{}
+			jobKey := types.NamespacedName{Name: resourceName + "-job", Namespace: "default"}
+			Consistently(func() error {
+				return k8sClient.Get(ctx, jobKey, job)
+			}, "2s", "500ms").ShouldNot(Succeed(), "no restore Job should be created")
 		})
 	})
 })
