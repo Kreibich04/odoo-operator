@@ -24,6 +24,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -60,6 +61,15 @@ type OdooReconciler struct {
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
+// reconcileDone collapses the "bail out early on partial result" pattern shared by every
+// step of Reconcile into a single branch at each call site.
+func reconcileDone(res *ctrl.Result, err error) (ctrl.Result, bool, error) {
+	if res != nil || err != nil {
+		return *res, true, err
+	}
+	return ctrl.Result{}, false, nil
+}
+
 func (r *OdooReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
@@ -73,8 +83,8 @@ func (r *OdooReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{}, nil
 	}
 
-	if res, err := r.handleFinalizer(ctx, odoo); res != nil || err != nil {
-		return *res, err
+	if result, done, err := reconcileDone(r.handleFinalizer(ctx, odoo)); done {
+		return result, err
 	}
 
 	// Add Finalizer if not present
@@ -88,49 +98,54 @@ func (r *OdooReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	}
 
 	dbHost, secretName, res, err := r.reconcileDatabase(ctx, odoo)
-	if res != nil || err != nil {
-		return *res, err
+	if result, done, err := reconcileDone(res, err); done {
+		return result, err
 	}
 
 	redisHost, redisPort, redisPassword, res, err := r.reconcileRedis(ctx, odoo)
-	if res != nil || err != nil {
-		return *res, err
+	if result, done, err := reconcileDone(res, err); done {
+		return result, err
 	}
 
-	if res, err := r.reconcilePVCs(ctx, odoo); res != nil || err != nil {
-		return *res, err
+	masterKey, res, err := r.reconcileMasterKey(ctx, odoo)
+	if result, done, err := reconcileDone(res, err); done {
+		return result, err
 	}
 
-	if res, err := r.reconcileAddonsDownload(ctx, odoo); res != nil || err != nil {
-		return *res, err
+	if result, done, err := reconcileDone(r.reconcilePVCs(ctx, odoo)); done {
+		return result, err
 	}
 
-	if res, err := r.reconcileConfigMap(ctx, odoo, dbHost, redisHost, redisPort, redisPassword); res != nil || err != nil {
-		return *res, err
+	if result, done, err := reconcileDone(r.reconcileAddonsDownload(ctx, odoo)); done {
+		return result, err
 	}
 
-	if res, err := r.reconcileInitJob(ctx, odoo, dbHost, secretName); res != nil || err != nil {
-		return *res, err
+	if result, done, err := reconcileDone(r.reconcileConfigMap(ctx, odoo, dbHost, redisHost, redisPort, redisPassword, masterKey)); done {
+		return result, err
 	}
 
-	if res, err := r.reconcileUpgrade(ctx, odoo, dbHost, secretName); res != nil || err != nil {
-		return *res, err
+	if result, done, err := reconcileDone(r.reconcileInitJob(ctx, odoo, dbHost, secretName)); done {
+		return result, err
 	}
 
-	if res, err := r.reconcileModulesUpdate(ctx, odoo, dbHost, secretName); res != nil || err != nil {
-		return *res, err
+	if result, done, err := reconcileDone(r.reconcileUpgrade(ctx, odoo, dbHost, secretName)); done {
+		return result, err
 	}
 
-	if res, err := r.reconcileStatefulSet(ctx, odoo, dbHost, secretName); res != nil || err != nil {
-		return *res, err
+	if result, done, err := reconcileDone(r.reconcileModulesUpdate(ctx, odoo, dbHost, secretName)); done {
+		return result, err
 	}
 
-	if res, err := r.reconcileServices(ctx, odoo); res != nil || err != nil {
-		return *res, err
+	if result, done, err := reconcileDone(r.reconcileStatefulSet(ctx, odoo, dbHost, secretName)); done {
+		return result, err
 	}
 
-	if res, err := r.reconcileIngress(ctx, odoo); res != nil || err != nil {
-		return *res, err
+	if result, done, err := reconcileDone(r.reconcileServices(ctx, odoo)); done {
+		return result, err
+	}
+
+	if result, done, err := reconcileDone(r.reconcileIngress(ctx, odoo)); done {
+		return result, err
 	}
 
 	defer r.updateStatus(ctx, req)
@@ -386,6 +401,48 @@ func (r *OdooReconciler) reconcileRedis(ctx context.Context, odoo *odoov1alpha1.
 	return redisHost, redisPort, redisPassword, nil, nil
 }
 
+// reconcileMasterKey resolves the Odoo database manager master password (admin_passwd).
+// Precedence: literal Value > SecretRef > auto-generated secret "<name>-masterkey".
+func (r *OdooReconciler) reconcileMasterKey(ctx context.Context, odoo *odoov1alpha1.Odoo) (string, *ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	if odoo.Spec.MasterKey.Value != "" {
+		return odoo.Spec.MasterKey.Value, nil, nil
+	}
+
+	secretName := odoo.Spec.MasterKey.SecretRef
+	if secretName == "" {
+		secretName = odoo.Name + "-masterkey"
+	}
+
+	secret := &corev1.Secret{}
+	err := r.Get(ctx, types.NamespacedName{Name: secretName, Namespace: odoo.Namespace}, secret)
+	if err != nil && errors.IsNotFound(err) {
+		if odoo.Spec.MasterKey.SecretRef != "" {
+			log.Error(err, "MasterKey SecretRef does not exist", "Secret.Name", secretName)
+			return "", &ctrl.Result{}, err
+		}
+		// Auto-generate a random master key
+		masterKey := generateRandomPassword(32)
+		sec := r.secretForMasterKey(odoo, secretName, masterKey)
+		log.Info("Creating MasterKey Secret", "Secret.Namespace", sec.Namespace, "Secret.Name", sec.Name)
+		if err := r.Create(ctx, sec); err != nil {
+			log.Error(err, "Failed to create MasterKey Secret")
+			return "", &ctrl.Result{}, err
+		}
+		return "", &ctrl.Result{Requeue: true}, nil
+	} else if err != nil {
+		log.Error(err, "Failed to get MasterKey Secret")
+		return "", &ctrl.Result{}, err
+	}
+
+	masterKey := string(secret.Data["masterkey"])
+	if masterKey == "" {
+		return "", &ctrl.Result{}, fmt.Errorf("masterkey secret %s is missing 'masterkey' key", secretName)
+	}
+	return masterKey, nil, nil
+}
+
 // reconcilePVCs manages the creation of data and addons PVCs for Odoo.
 func (r *OdooReconciler) reconcilePVCs(ctx context.Context, odoo *odoov1alpha1.Odoo) (*ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -529,12 +586,12 @@ func (r *OdooReconciler) reconcileAddonsDownload(ctx context.Context, odoo *odoo
 }
 
 // reconcileConfigMap manages the creation and update of the Odoo ConfigMap.
-func (r *OdooReconciler) reconcileConfigMap(ctx context.Context, odoo *odoov1alpha1.Odoo, dbHost string, redisHost string, redisPort int32, redisPassword string) (*ctrl.Result, error) {
+func (r *OdooReconciler) reconcileConfigMap(ctx context.Context, odoo *odoov1alpha1.Odoo, dbHost string, redisHost string, redisPort int32, redisPassword string, masterKey string) (*ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 	cm := &corev1.ConfigMap{}
 	err := r.Get(ctx, types.NamespacedName{Name: odoo.Name + "-config", Namespace: odoo.Namespace}, cm)
 	if err != nil && errors.IsNotFound(err) {
-		dep := r.configMapForOdoo(odoo, dbHost, redisHost, redisPort, redisPassword)
+		dep := r.configMapForOdoo(odoo, dbHost, redisHost, redisPort, redisPassword, masterKey)
 		log.Info("Creating a new ConfigMap", "ConfigMap.Namespace", dep.Namespace, "ConfigMap.Name", dep.Name)
 		err = r.Create(ctx, dep)
 		if err != nil {
@@ -1607,14 +1664,15 @@ func indexOf(slice []string, item string) int {
 	return -1
 }
 
-func (r *OdooReconciler) configMapForOdoo(odoo *odoov1alpha1.Odoo, dbHost string, redisHost string, redisPort int32, redisPassword string) *corev1.ConfigMap {
+func (r *OdooReconciler) configMapForOdoo(odoo *odoov1alpha1.Odoo, dbHost string, redisHost string, redisPort int32, redisPassword string, masterKey string) *corev1.ConfigMap {
 	ls := labelsForOdoo(odoo.Name)
 
 	// Start with default options
 	options := map[string]string{
 		// "addons_path" will be generated dynamically
 		"data_dir":          "/var/lib/odoo",
-		"admin_passwd":      "admin_password", // Consider making this configurable via a secret
+		"admin_passwd":      masterKey,
+		"list_db":           strconv.FormatBool(odoo.Spec.AllowDatabaseManager),
 		"db_maxconn":        "64",
 		"db_port":           "5432",
 		"db_template":       "template1",
@@ -2141,6 +2199,22 @@ func (r *OdooReconciler) secretForRedis(odoo *odoov1alpha1.Odoo, name, password 
 		},
 		StringData: map[string]string{
 			"password": password,
+		},
+	}
+	_ = ctrl.SetControllerReference(odoo, secret, r.Scheme)
+	return secret
+}
+
+func (r *OdooReconciler) secretForMasterKey(odoo *odoov1alpha1.Odoo, name, masterKey string) *corev1.Secret {
+	ls := labelsForOdoo(odoo.Name)
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: odoo.Namespace,
+			Labels:    ls,
+		},
+		StringData: map[string]string{
+			"masterkey": masterKey,
 		},
 	}
 	_ = ctrl.SetControllerReference(odoo, secret, r.Scheme)

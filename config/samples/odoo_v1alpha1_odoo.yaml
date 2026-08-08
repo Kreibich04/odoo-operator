@@ -14,7 +14,12 @@ spec:
 
   service:
     type: ClusterIP
-  
+
+  masterKey:
+    secretRef: odoo-sample-full-masterkey # must contain a 'masterkey' key
+  allowDatabaseManager: false # 404s /web/database/manager and /web/database/selector
+
+
   logs:
     volumeEnabled: false
 

@@ -213,7 +213,39 @@ spec:
       redis_password: ${REDIS_PASSWORD}
   ```
   
-  **Note**: For external Redis, you must manually ensure that the `REDIS_PASSWORD` environment variable (or equivalent, depending on your Odoo image) is passed to the Odoo Pods, typically by referencing the `secretRef` in the Odoo StatefulSet configuration. When `redis.managed` is true, the operator handles this automatically.## Configuration Reference
+  **Note**: For external Redis, you must manually ensure that the `REDIS_PASSWORD` environment variable (or equivalent, depending on your Odoo image) is passed to the Odoo Pods, typically by referencing the `secretRef` in the Odoo StatefulSet configuration. When `redis.managed` is true, the operator handles this automatically.
+
+### 6. Master Key & Database Manager
+
+The master key (`admin_passwd` in `odoo.conf`) guards Odoo's database manager (`/web/database/manager`, `/web/database/selector`) — the endpoints that create, duplicate, backup, restore, and drop databases. It is unrelated to any Odoo user's login password.
+
+**Master key resolution**, in order:
+1. `masterKey.value` — set the key literally in the resource.
+2. `masterKey.secretRef` — name of a Secret containing the key under the `masterkey` data key.
+3. If neither is set, the operator generates a random key and stores it in a Secret named `<odoo-name>-masterkey`.
+
+```yaml
+apiVersion: cloud.alterway.fr/v1alpha1
+kind: Odoo
+metadata:
+  name: odoo-prod
+spec:
+  version: "19"
+  size: 1
+  masterKey:
+    secretRef: odoo-prod-masterkey # must contain a 'masterkey' key
+```
+
+**Database manager exposure**: `allowDatabaseManager` controls Odoo's `list_db` setting. It defaults to `false`, which 404s `/web/database/manager` and `/web/database/selector` regardless of how Odoo is reached (Ingress, LoadBalancer, NodePort, etc.). Set it to `true` to expose the database manager UI:
+
+```yaml
+spec:
+  allowDatabaseManager: true
+```
+
+Note that `list_db: false` only hides the web UI — the underlying `db` service RPC methods (reachable via `/jsonrpc` or `/xmlrpc/2/db`) are still gated solely by the master key either way.
+
+## Configuration Reference
 
 ### OdooSpec
 
@@ -227,6 +259,9 @@ spec:
 | `redis` | Configuration for Redis session storage. | - |
 | `storage` | PVC configurations for data, logs, addons, and postgres. | - |
 | `resources` | Resource requests/limits for containers. | - |
+| `databaseSecretName` | Name of the Secret with DB credentials (`user`, `password`, `dbname`). Auto-created if empty and using a managed DB. | - |
+| `masterKey` | Database manager master password (`value` literal or `secretRef`). Auto-generated into a Secret if unset. | random, generated |
+| `allowDatabaseManager` | Exposes Odoo's database manager (`list_db`) instead of 404ing it. | `false` |
 
 *(See CRD definitions in `api/v1alpha1` for full details)*
 

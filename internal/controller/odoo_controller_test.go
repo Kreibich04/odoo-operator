@@ -111,6 +111,11 @@ var _ = Describe("Odoo Controller", func() {
 				NamespacedName: typeNamespacedName,
 			})
 			Expect(err).NotTo(HaveOccurred())
+			// Reconcile for MasterKey Secret (auto-generated since none was specified)
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
 			// Reconcile for Odoo PVCs (data, addons, logs — one requeue per PVC created)
 			for range 3 {
 				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
