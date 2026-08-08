@@ -16,6 +16,9 @@ Dockerfile.cross
 # Go workspace file
 go.work
 
+# go test stdout dumps
+test_output.txt
+
 # Kubernetes Generated files - skip generated files, except for vendored files
 !vendor/**/zz_generated.*
 
