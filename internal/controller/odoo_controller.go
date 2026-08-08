@@ -1190,6 +1190,20 @@ func (r *OdooReconciler) statefulSetForOdoo(odoo *odoov1alpha1.Odoo, dbHost, sec
 							AllowPrivilegeEscalation: func() *bool { b := false; return &b }(),
 							Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 						},
+						ReadinessProbe: &corev1.Probe{
+							ProbeHandler:        corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: "/web/login", Port: intstr.FromInt(8069)}},
+							InitialDelaySeconds: 20,
+							PeriodSeconds:       10,
+							TimeoutSeconds:      5,
+							FailureThreshold:    6,
+						},
+						LivenessProbe: &corev1.Probe{
+							ProbeHandler:        corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: "/web/login", Port: intstr.FromInt(8069)}},
+							InitialDelaySeconds: 60,
+							PeriodSeconds:       30,
+							TimeoutSeconds:      5,
+							FailureThreshold:    5,
+						},
 						Env: []corev1.EnvVar{
 							{Name: "HOST", Value: dbHost},
 							{Name: "POSTGRES_USER", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: secretName}, Key: "user"}}},
