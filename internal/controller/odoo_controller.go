@@ -1107,9 +1107,10 @@ func (r *OdooReconciler) statefulSetForOdoo(odoo *odoov1alpha1.Odoo, dbHost, sec
 				},
 				Spec: corev1.PodSpec{
 					SecurityContext: &corev1.PodSecurityContext{
-						RunAsUser:  func() *int64 { i := int64(0); return &i }(),
-						RunAsGroup: func() *int64 { i := int64(0); return &i }(),
-						FSGroup:    func() *int64 { i := int64(0); return &i }(),
+						RunAsUser:      func() *int64 { i := int64(0); return &i }(),
+						RunAsGroup:     func() *int64 { i := int64(0); return &i }(),
+						FSGroup:        func() *int64 { i := int64(0); return &i }(),
+						SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 					},
 					InitContainers: []corev1.Container{
 						{
@@ -1207,9 +1208,10 @@ func (r *OdooReconciler) jobForOdooInit(odoo *odoov1alpha1.Odoo, dbHost, secretN
 				Spec: corev1.PodSpec{
 					RestartPolicy: corev1.RestartPolicyOnFailure,
 					SecurityContext: &corev1.PodSecurityContext{
-						RunAsUser:  func() *int64 { i := int64(0); return &i }(),
-						RunAsGroup: func() *int64 { i := int64(0); return &i }(),
-						FSGroup:    func() *int64 { i := int64(0); return &i }(),
+						RunAsUser:      func() *int64 { i := int64(0); return &i }(),
+						RunAsGroup:     func() *int64 { i := int64(0); return &i }(),
+						FSGroup:        func() *int64 { i := int64(0); return &i }(),
+						SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 					},
 					InitContainers: []corev1.Container{
 						{
@@ -1329,9 +1331,10 @@ func (r *OdooReconciler) jobForOdooUpgrade(odoo *odoov1alpha1.Odoo, dbHost, secr
 				Spec: corev1.PodSpec{
 					RestartPolicy: corev1.RestartPolicyOnFailure,
 					SecurityContext: &corev1.PodSecurityContext{
-						RunAsUser:  func() *int64 { i := int64(0); return &i }(),
-						RunAsGroup: func() *int64 { i := int64(0); return &i }(),
-						FSGroup:    func() *int64 { i := int64(0); return &i }(),
+						RunAsUser:      func() *int64 { i := int64(0); return &i }(),
+						RunAsGroup:     func() *int64 { i := int64(0); return &i }(),
+						FSGroup:        func() *int64 { i := int64(0); return &i }(),
+						SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 					},
 					InitContainers: []corev1.Container{
 						{
@@ -1435,9 +1438,10 @@ func (r *OdooReconciler) jobForModulesUpdate(odoo *odoov1alpha1.Odoo, dbHost, se
 				Spec: corev1.PodSpec{
 					RestartPolicy: corev1.RestartPolicyOnFailure,
 					SecurityContext: &corev1.PodSecurityContext{
-						RunAsUser:  func() *int64 { i := int64(0); return &i }(),
-						RunAsGroup: func() *int64 { i := int64(0); return &i }(),
-						FSGroup:    func() *int64 { i := int64(0); return &i }(),
+						RunAsUser:      func() *int64 { i := int64(0); return &i }(),
+						RunAsGroup:     func() *int64 { i := int64(0); return &i }(),
+						FSGroup:        func() *int64 { i := int64(0); return &i }(),
+						SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 					},
 					InitContainers: []corev1.Container{
 						{
