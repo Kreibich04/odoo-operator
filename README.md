@@ -24,6 +24,45 @@ make install
 make deploy IMG=alterway/odoo-operator:latest
 ```
 
+#### Via Flux (GitOps)
+
+Releases also publish a Helm chart as an OCI artifact to GHCR (see `.github/workflows/release.yml`), which Flux's `HelmRepository` can consume directly:
+
+```yaml
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: odoo-operator
+  namespace: flux-system
+spec:
+  type: oci
+  interval: 1h
+  url: oci://ghcr.io/kreibich04/charts
+  # Only needed while the GHCR package is private:
+  # secretRef:
+  #   name: ghcr-pull-secret
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: odoo-operator
+  namespace: flux-system
+spec:
+  interval: 1h
+  chart:
+    spec:
+      chart: odoo-operator
+      version: ">=0.1.0"
+      sourceRef:
+        kind: HelmRepository
+        name: odoo-operator
+  install:
+    createNamespace: true
+  targetNamespace: operator-system
+```
+
+If the GHCR package is private, create `secretRef` as a `kubernetes.io/dockerconfigjson` secret (`flux create secret oci` or `kubectl create secret docker-registry`) with a token that has `read:packages`.
+
 ### 2. Basic Odoo Community Deployment
 
 Create a simple Odoo Community instance with a managed PostgreSQL database.

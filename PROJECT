@@ -6,6 +6,8 @@ cliVersion: 4.10.1
 domain: cloud.alterway.fr
 layout:
 - go.kubebuilder.io/v4
+plugins:
+  helm.kubebuilder.io/v1-alpha: {}
 projectName: operator
 repo: cloud.alterway.fr/operator
 resources:
