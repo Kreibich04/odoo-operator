@@ -149,6 +149,12 @@ type OdooSpec struct {
 	// +optional
 	Ingress IngressSpec `json:"ingress,omitempty"`
 
+	// NetworkPolicy optionally restricts network traffic to/from the Odoo, managed Postgres, and
+	// managed Redis pods this CR creates. Disabled by default (no NetworkPolicy is created),
+	// matching the operator's behavior before this field existed.
+	// +optional
+	NetworkPolicy NetworkPolicySpec `json:"networkPolicy,omitempty"`
+
 	// Options allows to override any key-value pair in the odoo.conf file.
 	// These values will be merged with the defaults.
 	// +optional
@@ -374,6 +380,26 @@ type IngressSpec struct {
 	// Annotations is a map of string keys and values to add to the Ingress metadata.
 	// +optional
 	Annotations map[string]string `json:"annotations,omitempty"`
+}
+
+// NetworkPolicySpec defines optional NetworkPolicy generation for the resources an Odoo CR manages.
+// When Enabled, the Odoo pods are only reachable on their web ports (8069/8072), and the managed
+// Postgres/Redis pods (when the operator deploys them, i.e. not an external database/Redis host)
+// are only reachable from the Odoo pods in the same namespace.
+type NetworkPolicySpec struct {
+	// Enabled generates NetworkPolicies for the Odoo, managed Postgres, and managed Redis pods.
+	// Defaults to false: no NetworkPolicy is created, matching the operator's behavior before this
+	// field existed. Toggling this back to false deletes any NetworkPolicies it previously created.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// IngressNamespaceSelector additionally allows traffic to the Odoo web ports (8069/8072) from
+	// pods in namespaces matching this label selector -- typically used to allow an ingress
+	// controller running in another namespace to reach Odoo. Traffic from the same namespace as
+	// the Odoo CR is always allowed regardless of this field. If unset, only same-namespace
+	// traffic is allowed on the web ports.
+	// +optional
+	IngressNamespaceSelector *metav1.LabelSelector `json:"ingressNamespaceSelector,omitempty"`
 }
 
 // OdooStatus defines the observed state of Odoo.

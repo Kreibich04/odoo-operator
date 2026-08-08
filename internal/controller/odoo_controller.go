@@ -53,13 +53,21 @@ type OdooReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-// +kubebuilder:rbac:groups=cloud.alterway.fr,resources=odoos,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=cloud.alterway.fr,resources=odoos/status,verbs=get;update;patch
+// RBAC markers below are trimmed to what the code in this file actually calls (grep-verified: no
+// Patch calls anywhere; Update is only ever called on Odoo itself, ConfigMaps, and StatefulSets;
+// Services are only ever get-or-created, never updated/deleted; Odoo/OdooBackup/OdooRestore CR
+// instances are never created/deleted by the controller -- only by their human-facing RBAC
+// personas in odoo_admin_role.yaml/odoo_editor_role.yaml/odoo_viewer_role.yaml).
+// +kubebuilder:rbac:groups=cloud.alterway.fr,resources=odoos,verbs=get;list;watch;update
+// +kubebuilder:rbac:groups=cloud.alterway.fr,resources=odoos/status,verbs=get;update
 // +kubebuilder:rbac:groups=cloud.alterway.fr,resources=odoos/finalizers,verbs=update
-// +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=core,resources=services;persistentvolumeclaims;configmaps;secrets,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=create;get;list;update;watch
+// +kubebuilder:rbac:groups=core,resources=configmaps,verbs=create;get;list;update;watch
+// +kubebuilder:rbac:groups=core,resources=secrets;persistentvolumeclaims,verbs=create;delete;get;list;watch
+// +kubebuilder:rbac:groups=core,resources=services,verbs=create;get;list;watch
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=create;delete;get;list;watch
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=create;delete;get;list;watch
+// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=create;delete;get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -148,6 +156,10 @@ func (r *OdooReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	}
 
 	if result, done, err := reconcileDone(r.reconcileIngress(ctx, odoo)); done {
+		return result, err
+	}
+
+	if result, done, err := reconcileDone(r.reconcileNetworkPolicies(ctx, odoo)); done {
 		return result, err
 	}
 
@@ -1081,6 +1093,146 @@ func (r *OdooReconciler) reconcileIngress(ctx context.Context, odoo *odoov1alpha
 		}
 	}
 	return nil, nil
+}
+
+// reconcileNetworkPolicies manages the NetworkPolicies for the Odoo, managed Postgres, and managed
+// Redis pods, following the same enabled-creates/disabled-deletes pattern as reconcileIngress.
+func (r *OdooReconciler) reconcileNetworkPolicies(ctx context.Context, odoo *odoov1alpha1.Odoo) (*ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	// applicable is what SHOULD exist if the feature is enabled (it already excludes, e.g., a
+	// Postgres policy when using an external database) -- used both to create and, further down,
+	// to know what NOT to delete.
+	applicable := r.networkPoliciesForOdoo(odoo)
+	applicableNames := make(map[string]bool, len(applicable))
+	for _, np := range applicable {
+		applicableNames[np.Name] = true
+	}
+
+	if odoo.Spec.NetworkPolicy.Enabled {
+		for _, np := range applicable {
+			found := &networkingv1.NetworkPolicy{}
+			err := r.Get(ctx, types.NamespacedName{Name: np.Name, Namespace: np.Namespace}, found)
+			if err != nil && errors.IsNotFound(err) {
+				log.Info("Creating a new NetworkPolicy", "NetworkPolicy.Namespace", np.Namespace, "NetworkPolicy.Name", np.Name)
+				if err := r.Create(ctx, np); err != nil {
+					log.Error(err, "Failed to create NetworkPolicy", "NetworkPolicy.Name", np.Name)
+					return &ctrl.Result{}, err
+				}
+				_ = ctrl.SetControllerReference(odoo, np, r.Scheme)
+				return &ctrl.Result{Requeue: true}, nil
+			} else if err != nil {
+				log.Error(err, "Failed to get NetworkPolicy", "NetworkPolicy.Name", np.Name)
+				return &ctrl.Result{}, err
+			}
+		}
+	}
+
+	// Clean up NetworkPolicies this CR previously created but no longer needs -- either the
+	// feature was disabled entirely, or a specific policy no longer applies (e.g. the database
+	// became external, or Redis was un-managed/disabled).
+	for _, suffix := range []string{"odoo-netpol", "postgres-netpol", "redis-netpol"} {
+		name := odoo.Name + "-" + suffix
+		if odoo.Spec.NetworkPolicy.Enabled && applicableNames[name] {
+			continue
+		}
+		np := &networkingv1.NetworkPolicy{}
+		err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: odoo.Namespace}, np)
+		if err == nil {
+			log.Info("Deleting NetworkPolicy", "NetworkPolicy.Name", name)
+			if err := r.Delete(ctx, np); err != nil {
+				log.Error(err, "Failed to delete NetworkPolicy", "NetworkPolicy.Name", name)
+				return &ctrl.Result{}, err
+			}
+		} else if !errors.IsNotFound(err) {
+			log.Error(err, "Failed to get NetworkPolicy", "NetworkPolicy.Name", name)
+			return &ctrl.Result{}, err
+		}
+	}
+	return nil, nil
+}
+
+// networkPoliciesForOdoo returns the NetworkPolicy objects for this Odoo CR: always one for the
+// Odoo pods themselves, plus one for managed Postgres and one for managed Redis when applicable
+// (external database/Redis hosts aren't ours to put a NetworkPolicy in front of).
+func (r *OdooReconciler) networkPoliciesForOdoo(odoo *odoov1alpha1.Odoo) []*networkingv1.NetworkPolicy {
+	tcp := corev1.ProtocolTCP
+	port := func(p int32) networkingv1.NetworkPolicyPort {
+		portVal := intstr.FromInt32(p)
+		return networkingv1.NetworkPolicyPort{Protocol: &tcp, Port: &portVal}
+	}
+
+	odooPeers := []networkingv1.NetworkPolicyPeer{{PodSelector: &metav1.LabelSelector{}}}
+	if odoo.Spec.NetworkPolicy.IngressNamespaceSelector != nil {
+		odooPeers = append(odooPeers, networkingv1.NetworkPolicyPeer{
+			NamespaceSelector: odoo.Spec.NetworkPolicy.IngressNamespaceSelector,
+		})
+	}
+
+	policies := []*networkingv1.NetworkPolicy{
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      odoo.Name + "-odoo-netpol",
+				Namespace: odoo.Namespace,
+				Labels:    labelsForOdoo(odoo.Name),
+			},
+			Spec: networkingv1.NetworkPolicySpec{
+				PodSelector: metav1.LabelSelector{MatchLabels: labelsForOdoo(odoo.Name)},
+				PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+				Ingress: []networkingv1.NetworkPolicyIngressRule{{
+					From:  odooPeers,
+					Ports: []networkingv1.NetworkPolicyPort{port(8069), port(8072)},
+				}},
+			},
+		},
+	}
+
+	isExternalDB := odoo.Spec.Database.Host != ""
+	if !isExternalDB {
+		policies = append(policies, &networkingv1.NetworkPolicy{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      odoo.Name + "-postgres-netpol",
+				Namespace: odoo.Namespace,
+				Labels:    labelsForOdoo(odoo.Name + "-postgres"),
+			},
+			Spec: networkingv1.NetworkPolicySpec{
+				PodSelector: metav1.LabelSelector{MatchLabels: labelsForOdoo(odoo.Name + "-postgres")},
+				PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+				Ingress: []networkingv1.NetworkPolicyIngressRule{{
+					From:  []networkingv1.NetworkPolicyPeer{{PodSelector: &metav1.LabelSelector{MatchLabels: labelsForOdoo(odoo.Name)}}},
+					Ports: []networkingv1.NetworkPolicyPort{port(5432)},
+				}},
+			},
+		})
+	}
+
+	isManagedRedis := odoo.Spec.Redis.Enabled && (odoo.Spec.Redis.Managed == nil || *odoo.Spec.Redis.Managed)
+	if isManagedRedis {
+		redisPort := int32(6379)
+		if odoo.Spec.Redis.Port != 0 {
+			redisPort = odoo.Spec.Redis.Port
+		}
+		policies = append(policies, &networkingv1.NetworkPolicy{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      odoo.Name + "-redis-netpol",
+				Namespace: odoo.Namespace,
+				Labels:    labelsForOdoo(odoo.Name + "-redis"),
+			},
+			Spec: networkingv1.NetworkPolicySpec{
+				PodSelector: metav1.LabelSelector{MatchLabels: labelsForOdoo(odoo.Name + "-redis")},
+				PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+				Ingress: []networkingv1.NetworkPolicyIngressRule{{
+					From:  []networkingv1.NetworkPolicyPeer{{PodSelector: &metav1.LabelSelector{MatchLabels: labelsForOdoo(odoo.Name)}}},
+					Ports: []networkingv1.NetworkPolicyPort{port(redisPort)},
+				}},
+			},
+		})
+	}
+
+	for _, np := range policies {
+		_ = ctrl.SetControllerReference(odoo, np, r.Scheme)
+	}
+	return policies
 }
 
 // updateStatus updates the status subresource of the Odoo CR based on the current state of its dependencies.

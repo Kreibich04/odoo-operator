@@ -19,7 +19,6 @@ package controller
 import (
 	"context"
 
-	batchv1 "k8s.io/api/batch/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -35,12 +34,11 @@ type OdooRestoreReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-// +kubebuilder:rbac:groups=cloud.alterway.fr,resources=odoorestores,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=cloud.alterway.fr,resources=odoorestores/status,verbs=get;update;patch
+// Reconcile only reads the OdooRestore CR and writes its status -- it creates no Job/PVC/Secret
+// (see the NotImplemented rewrite above), so those markers were removed.
+// +kubebuilder:rbac:groups=cloud.alterway.fr,resources=odoorestores,verbs=get;list;watch
+// +kubebuilder:rbac:groups=cloud.alterway.fr,resources=odoorestores/status,verbs=get;update
 // +kubebuilder:rbac:groups=cloud.alterway.fr,resources=odoorestores/finalizers,verbs=update
-// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch
-// +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -84,6 +82,5 @@ func (r *OdooRestoreReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 func (r *OdooRestoreReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&odoov1alpha1.OdooRestore{}).
-		Owns(&batchv1.Job{}).
 		Complete(r)
 }
