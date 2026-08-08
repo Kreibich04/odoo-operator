@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - "v*"
+    branches:
+      - main
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -16,15 +22,36 @@ jobs:
     outputs:
       image: ${{ steps.image.outputs.image }}
       version: ${{ steps.image.outputs.version }}
+      chart_version: ${{ steps.image.outputs.chart_version }}
     steps:
       - name: Clone the code
         uses: actions/checkout@v4
 
-      - name: Compute image name and version
+      - name: Compute image name, version, and tags
         id: image
         run: |
-          echo "image=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
-          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          IMAGE="ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')"
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+            echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+            echo "chart_version=${VERSION}" >> "$GITHUB_OUTPUT"
+            {
+              echo "tags<<EOF"
+              echo "${IMAGE}:${VERSION}"
+              echo "${IMAGE}:latest"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "version=main" >> "$GITHUB_OUTPUT"
+            echo "chart_version=0.0.0-main" >> "$GITHUB_OUTPUT"
+            {
+              echo "tags<<EOF"
+              echo "${IMAGE}:main"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -45,9 +72,7 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: |
-            ${{ steps.image.outputs.image }}:${{ steps.image.outputs.version }}
-            ${{ steps.image.outputs.image }}:latest
+          tags: ${{ steps.image.outputs.tags }}
 
   helm-chart:
     name: Package and push Helm chart
@@ -66,8 +91,9 @@ jobs:
       - name: Package and push chart
         env:
           VERSION: ${{ needs.image.outputs.version }}
+          CHART_VERSION: ${{ needs.image.outputs.chart_version }}
           IMAGE: ${{ needs.image.outputs.image }}
         run: |
           sed -i "s|repository:.*|repository: ${IMAGE}|; s|tag:.*|tag: ${VERSION}|" dist/chart/values.yaml
-          helm package dist/chart --version "$VERSION" --app-version "$VERSION" --destination /tmp
-          helm push "/tmp/odoo-operator-${VERSION}.tgz" "oci://ghcr.io/$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')/charts"
+          helm package dist/chart --version "$CHART_VERSION" --app-version "$VERSION" --destination /tmp
+          helm push "/tmp/odoo-operator-${CHART_VERSION}.tgz" "oci://ghcr.io/$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')/charts"
