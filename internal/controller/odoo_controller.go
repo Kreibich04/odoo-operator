@@ -1132,6 +1132,10 @@ func (r *OdooReconciler) statefulSetForOdoo(odoo *odoov1alpha1.Odoo, dbHost, sec
 							{ContainerPort: 8072, Name: "longpolling"},
 						},
 						Resources: odoo.Spec.Resources.Odoo,
+						SecurityContext: &corev1.SecurityContext{
+							AllowPrivilegeEscalation: func() *bool { b := false; return &b }(),
+							Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+						},
 						Env: []corev1.EnvVar{
 							{Name: "HOST", Value: dbHost},
 							{Name: "POSTGRES_USER", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: secretName}, Key: "user"}}},
@@ -1212,7 +1216,7 @@ func (r *OdooReconciler) jobForOdooInit(odoo *odoov1alpha1.Odoo, dbHost, secretN
 							Name:  "init-volumes",
 							Image: "busybox",
 							// On crée les dossiers s'ils n'existent pas
-							Command: []string{"sh", "-c", "mkdir -p /tmp/mount/enterprise-addons /tmp/mount/custom-addons; chmod -R 777 /tmp/mount/"},
+							Command: []string{"sh", "-c", "mkdir -p /tmp/mount/enterprise-addons /tmp/mount/custom-addons"},
 							VolumeMounts: []corev1.VolumeMount{
 								// On monte le volume SANS SubPath pour accéder à la racine
 								{Name: "odoo-addons-all", MountPath: "/tmp/mount"},
@@ -1238,6 +1242,10 @@ func (r *OdooReconciler) jobForOdooInit(odoo *odoov1alpha1.Odoo, dbHost, secretN
 								fmt.Sprintf("odoo -c /etc/odoo/odoo.conf -d $POSTGRES_DB -i base%s --stop-after-init -w $POSTGRES_PASSWORD -r $POSTGRES_USER", modulesToInstall),
 							},
 							Resources: odoo.Spec.Resources.Init,
+							SecurityContext: &corev1.SecurityContext{
+								AllowPrivilegeEscalation: func() *bool { b := false; return &b }(),
+								Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+							},
 							Env: []corev1.EnvVar{
 								{Name: "HOST", Value: dbHost},
 								{Name: "POSTGRES_USER", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: secretName}, Key: "user"}}},
@@ -1346,6 +1354,10 @@ func (r *OdooReconciler) jobForOdooUpgrade(odoo *odoov1alpha1.Odoo, dbHost, secr
 								fmt.Sprintf("odoo -c /etc/odoo/odoo.conf -d $POSTGRES_DB -u %s --stop-after-init -w $POSTGRES_PASSWORD -r $POSTGRES_USER", modulesToUpgrade),
 							},
 							Resources: odoo.Spec.Resources.Init, // Reuse init resources or add dedicated ones
+							SecurityContext: &corev1.SecurityContext{
+								AllowPrivilegeEscalation: func() *bool { b := false; return &b }(),
+								Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+							},
 							Env: []corev1.EnvVar{
 								{Name: "HOST", Value: dbHost},
 								{Name: "POSTGRES_USER", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: secretName}, Key: "user"}}},
@@ -1448,6 +1460,10 @@ func (r *OdooReconciler) jobForModulesUpdate(odoo *odoov1alpha1.Odoo, dbHost, se
 								fmt.Sprintf("odoo -c /etc/odoo/odoo.conf -d $POSTGRES_DB -i %s --stop-after-init -w $POSTGRES_PASSWORD -r $POSTGRES_USER", modulesToInstall),
 							},
 							Resources: odoo.Spec.Resources.Init, // Reuse init resources
+							SecurityContext: &corev1.SecurityContext{
+								AllowPrivilegeEscalation: func() *bool { b := false; return &b }(),
+								Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+							},
 							Env: []corev1.EnvVar{
 								{Name: "HOST", Value: dbHost},
 								{Name: "POSTGRES_USER", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: secretName}, Key: "user"}}},
