@@ -155,6 +155,12 @@ type OdooSpec struct {
 	// +optional
 	NetworkPolicy NetworkPolicySpec `json:"networkPolicy,omitempty"`
 
+	// Metrics optionally adds Prometheus exporter sidecars to the managed Postgres/Redis
+	// StatefulSets this CR creates. Odoo itself has no built-in Prometheus endpoint, so there's
+	// nothing to expose for the Odoo pods themselves. Disabled by default.
+	// +optional
+	Metrics MetricsSpec `json:"metrics,omitempty"`
+
 	// Options allows to override any key-value pair in the odoo.conf file.
 	// These values will be merged with the defaults.
 	// +optional
@@ -400,6 +406,20 @@ type NetworkPolicySpec struct {
 	// traffic is allowed on the web ports.
 	// +optional
 	IngressNamespaceSelector *metav1.LabelSelector `json:"ingressNamespaceSelector,omitempty"`
+}
+
+// MetricsSpec defines optional Prometheus exporter sidecars for the workloads an Odoo CR manages.
+type MetricsSpec struct {
+	// Postgres adds a postgres_exporter sidecar (port 9187) to the managed Postgres StatefulSet,
+	// exposing Postgres metrics for Prometheus to scrape. No-op when using an external database,
+	// since there's no managed Postgres pod to add a sidecar to.
+	// +optional
+	Postgres bool `json:"postgres,omitempty"`
+
+	// Redis adds a redis_exporter sidecar (port 9121) to the managed Redis StatefulSet, exposing
+	// Redis metrics for Prometheus to scrape. No-op when Redis is disabled or externally managed.
+	// +optional
+	Redis bool `json:"redis,omitempty"`
 }
 
 // OdooStatus defines the observed state of Odoo.

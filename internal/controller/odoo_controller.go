@@ -2428,6 +2428,27 @@ func (r *OdooReconciler) statefulSetForPostgres(odoo *odoov1alpha1.Odoo, secretN
 			},
 		},
 	}
+
+	if odoo.Spec.Metrics.Postgres {
+		sts.Spec.Template.Spec.Containers = append(sts.Spec.Template.Spec.Containers, corev1.Container{
+			Name:  "postgres-exporter",
+			Image: "quay.io/prometheuscommunity/postgres-exporter:v0.15.0",
+			Ports: []corev1.ContainerPort{
+				{ContainerPort: 9187, Name: "metrics"},
+			},
+			Env: []corev1.EnvVar{
+				{Name: "DATA_SOURCE_USER", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: secretName}, Key: "user"}}},
+				{Name: "DATA_SOURCE_PASS", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: secretName}, Key: "password"}}},
+				// dbname is always "odoo" for a managed Postgres instance (see secretForPostgres).
+				{Name: "DATA_SOURCE_URI", Value: "localhost:5432/odoo?sslmode=disable"},
+			},
+			SecurityContext: &corev1.SecurityContext{
+				AllowPrivilegeEscalation: func() *bool { b := false; return &b }(),
+				Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+			},
+		})
+	}
+
 	_ = ctrl.SetControllerReference(odoo, sts, r.Scheme)
 	return sts
 }
@@ -2476,6 +2497,25 @@ func (r *OdooReconciler) statefulSetForRedis(odoo *odoov1alpha1.Odoo, redisSecre
 			},
 		},
 	}
+
+	if odoo.Spec.Metrics.Redis {
+		sts.Spec.Template.Spec.Containers = append(sts.Spec.Template.Spec.Containers, corev1.Container{
+			Name:  "redis-exporter",
+			Image: "oliver006/redis_exporter:v1.62.0",
+			Ports: []corev1.ContainerPort{
+				{ContainerPort: 9121, Name: "metrics"},
+			},
+			Env: []corev1.EnvVar{
+				{Name: "REDIS_ADDR", Value: "redis://localhost:6379"},
+				{Name: "REDIS_PASSWORD", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: redisSecretName}, Key: "password"}}},
+			},
+			SecurityContext: &corev1.SecurityContext{
+				AllowPrivilegeEscalation: func() *bool { b := false; return &b }(),
+				Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+			},
+		})
+	}
+
 	_ = ctrl.SetControllerReference(odoo, sts, r.Scheme)
 	return sts
 }
