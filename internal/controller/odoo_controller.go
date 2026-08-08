@@ -33,6 +33,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -929,6 +930,19 @@ func (r *OdooReconciler) reconcileStatefulSet(ctx context.Context, odoo *odoov1a
 			err = r.Update(ctx, found)
 			if err != nil {
 				log.Error(err, "Failed to update StatefulSet image")
+				return &ctrl.Result{}, err
+			}
+			return &ctrl.Result{Requeue: true}, nil
+		}
+
+		desiredResources := desiredSts.Spec.Template.Spec.Containers[0].Resources
+		currentResources := found.Spec.Template.Spec.Containers[0].Resources
+		if !equality.Semantic.DeepEqual(currentResources, desiredResources) {
+			log.Info("Updating StatefulSet resources", "Current", currentResources, "Desired", desiredResources)
+			found.Spec.Template.Spec.Containers[0].Resources = desiredResources
+			err = r.Update(ctx, found)
+			if err != nil {
+				log.Error(err, "Failed to update StatefulSet resources")
 				return &ctrl.Result{}, err
 			}
 			return &ctrl.Result{Requeue: true}, nil
