@@ -24,6 +24,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -120,7 +121,8 @@ func (r *OdooReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return result, err
 	}
 
-	if result, done, err := reconcileDone(r.reconcileConfigMap(ctx, odoo, dbHost, redisHost, redisPort, redisPassword, masterKey)); done {
+	configHash, res, err := r.reconcileConfigMap(ctx, odoo, dbHost, redisHost, redisPort, redisPassword, masterKey)
+	if result, done, err := reconcileDone(res, err); done {
 		return result, err
 	}
 
@@ -136,7 +138,7 @@ func (r *OdooReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return result, err
 	}
 
-	if result, done, err := reconcileDone(r.reconcileStatefulSet(ctx, odoo, dbHost, secretName)); done {
+	if result, done, err := reconcileDone(r.reconcileStatefulSet(ctx, odoo, dbHost, secretName, configHash)); done {
 		return result, err
 	}
 
@@ -586,25 +588,38 @@ func (r *OdooReconciler) reconcileAddonsDownload(ctx context.Context, odoo *odoo
 }
 
 // reconcileConfigMap manages the creation and update of the Odoo ConfigMap.
-func (r *OdooReconciler) reconcileConfigMap(ctx context.Context, odoo *odoov1alpha1.Odoo, dbHost string, redisHost string, redisPort int32, redisPassword string, masterKey string) (*ctrl.Result, error) {
+func (r *OdooReconciler) reconcileConfigMap(ctx context.Context, odoo *odoov1alpha1.Odoo, dbHost string, redisHost string, redisPort int32, redisPassword string, masterKey string) (string, *ctrl.Result, error) {
 	log := logf.FromContext(ctx)
+	desired := r.configMapForOdoo(odoo, dbHost, redisHost, redisPort, redisPassword, masterKey)
+	hashBytes := sha256.Sum256([]byte(desired.Data["odoo.conf"]))
+	configHash := hex.EncodeToString(hashBytes[:])
+
 	cm := &corev1.ConfigMap{}
 	err := r.Get(ctx, types.NamespacedName{Name: odoo.Name + "-config", Namespace: odoo.Namespace}, cm)
 	if err != nil && errors.IsNotFound(err) {
-		dep := r.configMapForOdoo(odoo, dbHost, redisHost, redisPort, redisPassword, masterKey)
-		log.Info("Creating a new ConfigMap", "ConfigMap.Namespace", dep.Namespace, "ConfigMap.Name", dep.Name)
-		err = r.Create(ctx, dep)
+		log.Info("Creating a new ConfigMap", "ConfigMap.Namespace", desired.Namespace, "ConfigMap.Name", desired.Name)
+		err = r.Create(ctx, desired)
 		if err != nil {
-			log.Error(err, "Failed to create new ConfigMap", "ConfigMap.Namespace", dep.Namespace, "ConfigMap.Name", dep.Name)
-			return &ctrl.Result{}, err
+			log.Error(err, "Failed to create new ConfigMap", "ConfigMap.Namespace", desired.Namespace, "ConfigMap.Name", desired.Name)
+			return configHash, &ctrl.Result{}, err
 		}
-		_ = ctrl.SetControllerReference(odoo, dep, r.Scheme)
-		return &ctrl.Result{Requeue: true}, nil
+		_ = ctrl.SetControllerReference(odoo, desired, r.Scheme)
+		return configHash, &ctrl.Result{Requeue: true}, nil
 	} else if err != nil {
 		log.Error(err, "Failed to get ConfigMap")
-		return &ctrl.Result{}, err
+		return configHash, &ctrl.Result{}, err
 	}
-	return nil, nil
+
+	if cm.Data["odoo.conf"] != desired.Data["odoo.conf"] {
+		log.Info("Updating ConfigMap", "ConfigMap.Namespace", cm.Namespace, "ConfigMap.Name", cm.Name)
+		cm.Data = desired.Data
+		if err := r.Update(ctx, cm); err != nil {
+			log.Error(err, "Failed to update ConfigMap", "ConfigMap.Namespace", cm.Namespace, "ConfigMap.Name", cm.Name)
+			return configHash, &ctrl.Result{}, err
+		}
+		return configHash, &ctrl.Result{Requeue: true}, nil
+	}
+	return configHash, nil, nil
 }
 
 // reconcileInitJob manages the database initialization Job.
@@ -850,7 +865,7 @@ func (r *OdooReconciler) reconcileModulesUpdate(ctx context.Context, odoo *odoov
 }
 
 // reconcileStatefulSet manages the creation and updates of the Odoo StatefulSet.
-func (r *OdooReconciler) reconcileStatefulSet(ctx context.Context, odoo *odoov1alpha1.Odoo, dbHost, secretName string) (*ctrl.Result, error) {
+func (r *OdooReconciler) reconcileStatefulSet(ctx context.Context, odoo *odoov1alpha1.Odoo, dbHost, secretName, configHash string) (*ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 	foundSts := &appsv1.StatefulSet{}
 	err := r.Get(ctx, types.NamespacedName{Name: odoo.Name, Namespace: odoo.Namespace}, foundSts)
@@ -877,7 +892,7 @@ func (r *OdooReconciler) reconcileStatefulSet(ctx context.Context, odoo *odoov1a
 	found := &appsv1.StatefulSet{}
 	err = r.Get(ctx, types.NamespacedName{Name: odoo.Name, Namespace: odoo.Namespace}, found)
 	if err != nil && errors.IsNotFound(err) {
-		dep := r.statefulSetForOdoo(odoo, dbHost, secretName)
+		dep := r.statefulSetForOdoo(odoo, dbHost, secretName, configHash)
 		log.Info("Creating a new StatefulSet", "StatefulSet.Namespace", dep.Namespace, "StatefulSet.Name", dep.Name)
 		err = r.Create(ctx, dep)
 		if err != nil {
@@ -902,7 +917,7 @@ func (r *OdooReconciler) reconcileStatefulSet(ctx context.Context, odoo *odoov1a
 		return &ctrl.Result{RequeueAfter: time.Minute}, nil
 	}
 
-	desiredSts := r.statefulSetForOdoo(odoo, dbHost, secretName)
+	desiredSts := r.statefulSetForOdoo(odoo, dbHost, secretName, configHash)
 	// Update image if needed
 	if len(found.Spec.Template.Spec.Containers) > 0 && len(desiredSts.Spec.Template.Spec.Containers) > 0 {
 		desiredImage := desiredSts.Spec.Template.Spec.Containers[0].Image
@@ -932,6 +947,19 @@ func (r *OdooReconciler) reconcileStatefulSet(ctx context.Context, odoo *odoov1a
 		err = r.Update(ctx, found)
 		if err != nil {
 			log.Error(err, "Failed to update StatefulSet hash")
+			return &ctrl.Result{}, err
+		}
+		return &ctrl.Result{Requeue: true}, nil
+	}
+
+	desiredConfigHash := desiredSts.Spec.Template.Annotations["odoo.cloud.alterway.fr/config-hash"]
+	currentConfigHash := found.Spec.Template.Annotations["odoo.cloud.alterway.fr/config-hash"]
+	if currentConfigHash != desiredConfigHash {
+		log.Info("Updating StatefulSet config hash annotation", "Current", currentConfigHash, "Desired", desiredConfigHash)
+		found.Spec.Template.Annotations["odoo.cloud.alterway.fr/config-hash"] = desiredConfigHash
+		err = r.Update(ctx, found)
+		if err != nil {
+			log.Error(err, "Failed to update StatefulSet config hash")
 			return &ctrl.Result{}, err
 		}
 		return &ctrl.Result{Requeue: true}, nil
@@ -1077,7 +1105,7 @@ func (r *OdooReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 // statefulSetForOdoo returns an Odoo StatefulSet object.
-func (r *OdooReconciler) statefulSetForOdoo(odoo *odoov1alpha1.Odoo, dbHost, secretName string) *appsv1.StatefulSet {
+func (r *OdooReconciler) statefulSetForOdoo(odoo *odoov1alpha1.Odoo, dbHost, secretName, configHash string) *appsv1.StatefulSet {
 	ls := labelsForOdoo(odoo.Name)
 	replicas := odoo.Spec.Size
 	odooVersion := odoo.Spec.Version
@@ -1103,6 +1131,7 @@ func (r *OdooReconciler) statefulSetForOdoo(odoo *odoov1alpha1.Odoo, dbHost, sec
 					Labels: ls,
 					Annotations: map[string]string{
 						"odoo.cloud.alterway.fr/modules-hash": odoo.Status.ModulesHash,
+						"odoo.cloud.alterway.fr/config-hash":  configHash,
 					},
 				},
 				Spec: corev1.PodSpec{
@@ -1778,11 +1807,19 @@ func (r *OdooReconciler) configMapForOdoo(odoo *odoov1alpha1.Odoo, dbHost string
 		options[key] = value
 	}
 
-	// Build the odoo.conf content
+	// Build the odoo.conf content. Keys are sorted for deterministic output --
+	// map iteration order is randomized, and non-deterministic content here
+	// would make ConfigMap drift-detection see a "change" on every reconcile.
+	keys := make([]string, 0, len(options))
+	for key := range options {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
 	var builder strings.Builder
 	_, _ = builder.WriteString("[options]\n")
-	for key, value := range options {
-		_, _ = builder.WriteString(fmt.Sprintf("%s = %s\n", key, value))
+	for _, key := range keys {
+		_, _ = builder.WriteString(fmt.Sprintf("%s = %s\n", key, options[key]))
 	}
 	odooConfContent := builder.String()
 
