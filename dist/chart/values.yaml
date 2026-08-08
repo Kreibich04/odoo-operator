@@ -44,6 +44,12 @@ controllerManager:
 # [RBAC]: To enable RBAC (Permissions) configurations
 rbac:
   enable: true
+  # watchNamespaces restricts the operator to only these namespaces: a namespaced Role +
+  # RoleBinding is created in each one instead of a cluster-wide ClusterRole/ClusterRoleBinding,
+  # and the manager is told to only watch these namespaces (see the matching --watch-namespaces
+  # arg derived from this same list in templates/manager/manager.yaml). Leave empty (the default)
+  # for the original cluster-wide behavior.
+  watchNamespaces: []
 
 # [CRDs]: To enable the CRDs
 crd:
