@@ -578,6 +578,7 @@ func (r *OdooReconciler) reconcileAddonsDownload(ctx context.Context, odoo *odoo
 				if err := r.Status().Update(ctx, odoo); err != nil {
 					log.Error(err, "Failed to update status for Addons failure")
 				}
+				_ = r.Delete(ctx, addonsJob, client.PropagationPolicy(metav1.DeletePropagationBackground))
 				return &ctrl.Result{}, fmt.Errorf("addons download job failed")
 			}
 			log.Info("Addons Download Job is still running", "Job.Name", addonsJobName)
@@ -675,6 +676,7 @@ func (r *OdooReconciler) reconcileInitJob(ctx context.Context, odoo *odoov1alpha
 			if err := r.Status().Update(ctx, odoo); err != nil {
 				log.Error(err, "Failed to update Odoo status for failed DB init job")
 			}
+			_ = r.Delete(ctx, initJob, client.PropagationPolicy(metav1.DeletePropagationBackground))
 			return &ctrl.Result{}, fmt.Errorf("DB initialization Job %s failed", initJob.Name)
 		}
 		log.Info("DB initialization Job is still running", "Job.Name", initJob.Name)
@@ -773,6 +775,7 @@ func (r *OdooReconciler) reconcileUpgrade(ctx context.Context, odoo *odoov1alpha
 				if err := r.Status().Update(ctx, odoo); err != nil {
 					log.Error(err, "Failed to update Odoo status for upgrade failure")
 				}
+				_ = r.Delete(ctx, upgradeJob, client.PropagationPolicy(metav1.DeletePropagationBackground))
 				return &ctrl.Result{}, fmt.Errorf("upgrade job failed")
 			}
 			log.Info("Upgrade Job is still running", "Job.Name", upgradeJobName)
@@ -849,6 +852,7 @@ func (r *OdooReconciler) reconcileModulesUpdate(ctx context.Context, odoo *odoov
 				if err := r.Status().Update(ctx, odoo); err != nil {
 					log.Error(err, "Failed to update Odoo status for modules update failure")
 				}
+				_ = r.Delete(ctx, modulesUpdateJob, client.PropagationPolicy(metav1.DeletePropagationBackground))
 				return &ctrl.Result{}, fmt.Errorf("modules update job failed")
 			}
 			log.Info("Modules Update Job is still running", "Job.Name", modulesUpdateJobName)
