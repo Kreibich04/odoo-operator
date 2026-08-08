@@ -539,12 +539,18 @@ func (r *OdooReconciler) reconcileAddonsDownload(ctx context.Context, odoo *odoo
 			}
 		}
 
-		addonsJobName := odoo.Name + "-addons-download-job"
+		repositoriesHash, err := computeRepositoriesHash(repositoriesToClone)
+		if err != nil {
+			log.Error(err, "Failed to compute repositories hash")
+			return &ctrl.Result{}, err
+		}
+		addonsJobName := fmt.Sprintf("%s-addons-download-job-%s", odoo.Name, repositoriesHash[:8])
 		addonsJob := &batchv1.Job{}
-		err := r.Get(ctx, types.NamespacedName{Name: addonsJobName, Namespace: odoo.Namespace}, addonsJob)
+		err = r.Get(ctx, types.NamespacedName{Name: addonsJobName, Namespace: odoo.Namespace}, addonsJob)
 
 		if err != nil && errors.IsNotFound(err) {
 			job := r.jobForAddonsDownload(odoo, repositoriesToClone, requiredSSHSecrets)
+			job.Name = addonsJobName
 			log.Info("Creating Addons Download Job", "Job.Namespace", job.Namespace, "Job.Name", job.Name)
 			if err := r.Create(ctx, job); err != nil {
 				log.Error(err, "Failed to create Addons Download Job")
@@ -1251,6 +1257,7 @@ func (r *OdooReconciler) jobForOdooInit(odoo *odoov1alpha1.Odoo, dbHost, secretN
 			Labels:    ls,
 		},
 		Spec: batchv1.JobSpec{
+			TTLSecondsAfterFinished: func() *int32 { i := int32(3600); return &i }(),
 			Template: corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
 					RestartPolicy: corev1.RestartPolicyOnFailure,
@@ -1374,6 +1381,7 @@ func (r *OdooReconciler) jobForOdooUpgrade(odoo *odoov1alpha1.Odoo, dbHost, secr
 			Labels:    ls,
 		},
 		Spec: batchv1.JobSpec{
+			TTLSecondsAfterFinished: func() *int32 { i := int32(3600); return &i }(),
 			Template: corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
 					RestartPolicy: corev1.RestartPolicyOnFailure,
@@ -1481,6 +1489,7 @@ func (r *OdooReconciler) jobForModulesUpdate(odoo *odoov1alpha1.Odoo, dbHost, se
 			Labels:    ls,
 		},
 		Spec: batchv1.JobSpec{
+			TTLSecondsAfterFinished: func() *int32 { i := int32(3600); return &i }(),
 			Template: corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
 					RestartPolicy: corev1.RestartPolicyOnFailure,
@@ -1684,6 +1693,7 @@ fi
 			Labels:    ls,
 		},
 		Spec: batchv1.JobSpec{
+			TTLSecondsAfterFinished: func() *int32 { i := int32(3600); return &i }(),
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: ls,
@@ -2336,6 +2346,16 @@ func removeString(slice []string, s string) (result []string) {
 // computeModulesHash generates a SHA256 hash of the Odoo ModulesSpec to detect changes.
 func computeModulesHash(modulesSpec odoov1alpha1.ModulesSpec) (string, error) {
 	bytes, err := json.Marshal(modulesSpec)
+	if err != nil {
+		return "", err
+	}
+	hash := sha256.Sum256(bytes)
+	return hex.EncodeToString(hash[:]), nil
+}
+
+// computeRepositoriesHash generates a SHA256 hash of the addons-download repository list to detect changes.
+func computeRepositoriesHash(repositories []odoov1alpha1.GitRepositorySpec) (string, error) {
+	bytes, err := json.Marshal(repositories)
 	if err != nil {
 		return "", err
 	}

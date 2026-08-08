@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -449,10 +450,12 @@ var _ = Describe("Odoo Controller", func() {
 			if err == nil {
 				_ = k8sClient.Delete(ctx, secret)
 			}
-			job := &batchv1.Job{}
-			err = k8sClient.Get(ctx, types.NamespacedName{Name: resourceName + "-addons-download-job", Namespace: "default"}, job)
+			jobList := &batchv1.JobList{}
+			err = k8sClient.List(ctx, jobList, client.InNamespace("default"), client.MatchingLabels{"app": "odoo", "odoo_cr": resourceName})
 			if err == nil {
-				_ = k8sClient.Delete(ctx, job)
+				for i := range jobList.Items {
+					_ = k8sClient.Delete(ctx, &jobList.Items[i])
+				}
 			}
 		})
 
@@ -463,15 +466,24 @@ var _ = Describe("Odoo Controller", func() {
 			}
 
 			// Run reconcile until Job is created (need multiple passes for PVCs etc.)
+			// Job name now includes a repositories-content hash suffix, so list by
+			// the Odoo CR's label instead of a fixed name.
 			entJob := &batchv1.Job{}
-			entJobName := resourceName + "-addons-download-job"
 
 			Eventually(func() error {
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				if err != nil {
 					return err
 				}
-				return k8sClient.Get(ctx, types.NamespacedName{Name: entJobName, Namespace: "default"}, entJob)
+				jobList := &batchv1.JobList{}
+				if err := k8sClient.List(ctx, jobList, client.InNamespace("default"), client.MatchingLabels{"app": "odoo", "odoo_cr": resourceName}); err != nil {
+					return err
+				}
+				if len(jobList.Items) == 0 {
+					return fmt.Errorf("addons download job not created yet")
+				}
+				entJob = &jobList.Items[0]
+				return nil
 			}, "10s", "1s").Should(Succeed(), "Addons Job should be created")
 
 			// Check mounts
