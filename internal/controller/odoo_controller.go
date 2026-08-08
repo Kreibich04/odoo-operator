@@ -1862,7 +1862,7 @@ func (r *OdooReconciler) secretForPostgres(odoo *odoov1alpha1.Odoo, name string)
 		},
 		StringData: map[string]string{
 			"user":     "odoo",
-			"password": "odoo",
+			"password": generateRandomPassword(32),
 			"dbname":   "odoo",
 		},
 	}
