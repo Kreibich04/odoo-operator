@@ -53,6 +53,16 @@ type OdooReconciler struct {
 	Scheme *runtime.Scheme
 }
 
+// Third-party addon used for spec.metrics.odoo (see MetricsSpec) -- Odoo has no built-in
+// Prometheus endpoint, unlike Postgres/Redis this adds an in-process /metrics HTTP route rather
+// than a sidecar. Branch layout is OCA-style (one branch per Odoo version); the repo's
+// maintainers may not have caught up to every Odoo version this operator can install.
+const (
+	metricsExporterModuleName = "prometheus_exporter"
+	metricsExporterRepoName   = "odoo-metrics-exporter"
+	metricsExporterRepoURL    = "https://github.com/Mint-System/Odoo-Apps-Server-Tools.git"
+)
+
 // RBAC markers below are trimmed to what the code in this file actually calls (grep-verified: no
 // Patch calls anywhere; Update is only ever called on Odoo itself, ConfigMaps, and StatefulSets;
 // Services are only ever get-or-created, never updated/deleted; Odoo/OdooBackup/OdooRestore CR
@@ -554,6 +564,19 @@ func (r *OdooReconciler) reconcileAddonsDownload(ctx context.Context, odoo *odoo
 		}
 	}
 
+	// Add the metrics-exporter addon repo if enabled (see MetricsSpec.Odoo)
+	if odoo.Spec.Metrics.Odoo {
+		odooVersion := odoo.Spec.Version
+		if odooVersion == "" {
+			odooVersion = "19" // Default version, matches the odoo:<version> image tag used elsewhere
+		}
+		repositoriesToClone = append(repositoriesToClone, odoov1alpha1.GitRepositorySpec{
+			Name:    metricsExporterRepoName,
+			URL:     metricsExporterRepoURL,
+			Version: odooVersion,
+		})
+	}
+
 	// Add custom repositories
 	for _, customRepo := range odoo.Spec.Modules.Repositories {
 		repositoriesToClone = append(repositoriesToClone, customRepo)
@@ -754,7 +777,7 @@ func (r *OdooReconciler) reconcileUpgrade(ctx context.Context, odoo *odoov1alpha
 			log.Info("First installation detected, setting CurrentVersion", "Version", targetVersion)
 			odoo.Status.CurrentVersion = targetVersion
 
-			initialHash, err := computeModulesHash(odoo.Spec.Modules)
+			initialHash, err := computeModulesHash(effectiveModules(odoo))
 			if err == nil {
 				odoo.Status.ModulesHash = initialHash
 			}
@@ -839,7 +862,7 @@ func (r *OdooReconciler) reconcileUpgrade(ctx context.Context, odoo *odoov1alpha
 func (r *OdooReconciler) reconcileModulesUpdate(ctx context.Context, odoo *odoov1alpha1.Odoo, dbHost, secretName string) (*ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 	currentModulesHash := odoo.Status.ModulesHash
-	targetModulesHash, err := computeModulesHash(odoo.Spec.Modules)
+	targetModulesHash, err := computeModulesHash(effectiveModules(odoo))
 	if err != nil {
 		log.Error(err, "Failed to compute modules hash")
 		return &ctrl.Result{}, err
@@ -1422,6 +1445,14 @@ func (r *OdooReconciler) statefulSetForOdoo(odoo *odoov1alpha1.Odoo, dbHost, sec
 		},
 	}
 
+	// Expose the prometheus_exporter addon's /metrics route (see MetricsSpec.Odoo) on a named
+	// port distinct from "web", even though both are the same 8069 Odoo HTTP port -- the chart's
+	// PodMonitor scrapes by port name, and only wants this pod when the addon is actually enabled.
+	if odoo.Spec.Metrics.Odoo {
+		dep.Spec.Template.Spec.Containers[0].Ports = append(dep.Spec.Template.Spec.Containers[0].Ports,
+			corev1.ContainerPort{ContainerPort: 8069, Name: "metrics"})
+	}
+
 	// Conditionally add the log volume and mounts
 	logVolumeEnabled := odoo.Spec.Logs.VolumeEnabled == nil || *odoo.Spec.Logs.VolumeEnabled
 	if logVolumeEnabled {
@@ -1456,9 +1487,10 @@ func (r *OdooReconciler) jobForOdooInit(odoo *odoov1alpha1.Odoo, dbHost, secretN
 	odooImage := fmt.Sprintf("odoo:%s", odooVersion)
 
 	// Build modules to install string
+	install := effectiveModules(odoo).Install
 	modulesToInstall := ""
-	if len(odoo.Spec.Modules.Install) > 0 {
-		modulesToInstall = "," + strings.Join(odoo.Spec.Modules.Install, ",")
+	if len(install) > 0 {
+		modulesToInstall = "," + strings.Join(install, ",")
 	}
 
 	job := &batchv1.Job{
@@ -1573,8 +1605,8 @@ func (r *OdooReconciler) jobForOdooUpgrade(odoo *odoov1alpha1.Odoo, dbHost, secr
 	modulesToUpgrade := odoo.Spec.Upgrade.Modules // Use specific upgrade modules if defined
 	if modulesToUpgrade == "" {
 		// Fallback to install list for upgrade if no specific upgrade modules are provided
-		if len(odoo.Spec.Modules.Install) > 0 {
-			modulesToUpgrade = strings.Join(odoo.Spec.Modules.Install, ",")
+		if install := effectiveModules(odoo).Install; len(install) > 0 {
+			modulesToUpgrade = strings.Join(install, ",")
 		} else {
 			modulesToUpgrade = "all" // Default to all if nothing specified
 		}
@@ -1687,8 +1719,8 @@ func (r *OdooReconciler) jobForModulesUpdate(odoo *odoov1alpha1.Odoo, dbHost, se
 
 	// Use install list for modules update
 	modulesToInstall := "base" // Always include base to be safe, or just the list
-	if len(odoo.Spec.Modules.Install) > 0 {
-		modulesToInstall = strings.Join(odoo.Spec.Modules.Install, ",")
+	if install := effectiveModules(odoo).Install; len(install) > 0 {
+		modulesToInstall = strings.Join(install, ",")
 	}
 
 	// Generate a deterministic name for the update job is handled by the caller (reconcileModulesUpdate)
@@ -2024,6 +2056,11 @@ func (r *OdooReconciler) configMapForOdoo(odoo *odoov1alpha1.Odoo, dbHost string
 	// Add Enterprise path if enabled
 	if odoo.Spec.Enterprise.Enabled {
 		addonsPathParts = append(addonsPathParts, "/mnt/extra-addons/enterprise")
+	}
+
+	// Add the metrics-exporter addon path if enabled (see MetricsSpec.Odoo)
+	if odoo.Spec.Metrics.Odoo {
+		addonsPathParts = append(addonsPathParts, "/mnt/extra-addons/"+metricsExporterRepoName)
 	}
 
 	// Add custom repositories paths
@@ -2604,6 +2641,21 @@ func removeString(slice []string, s string) (result []string) {
 		result = append(result, item)
 	}
 	return
+}
+
+// effectiveModules returns odoo.Spec.Modules with the metrics-exporter addon folded into Install
+// when spec.metrics.odoo is enabled, without mutating the stored CR spec. Used both for building
+// module install/upgrade commands and for the modules-hash that triggers a reinstall Job when the
+// effective set of modules to install changes -- including when metrics.odoo is toggled on its own.
+func effectiveModules(odoo *odoov1alpha1.Odoo) odoov1alpha1.ModulesSpec {
+	modules := odoo.Spec.Modules
+	if odoo.Spec.Metrics.Odoo && indexOf(modules.Install, metricsExporterModuleName) == -1 {
+		install := make([]string, 0, len(modules.Install)+1)
+		install = append(install, modules.Install...)
+		install = append(install, metricsExporterModuleName)
+		modules.Install = install
+	}
+	return modules
 }
 
 // computeModulesHash generates a SHA256 hash of the Odoo ModulesSpec to detect changes.

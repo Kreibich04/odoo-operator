@@ -420,6 +420,16 @@ type MetricsSpec struct {
 	// Redis metrics for Prometheus to scrape. No-op when Redis is disabled or externally managed.
 	// +optional
 	Redis bool `json:"redis,omitempty"`
+
+	// Odoo installs the third-party "prometheus_exporter" addon (Mint-System/Odoo-Apps-Server-Tools)
+	// into the Odoo pods and exposes it on a "metrics" port alongside the existing web port, so
+	// Odoo's own request/performance metrics are scraped the same way as the Postgres/Redis
+	// exporters. Unlike Postgres/Redis, Odoo has no separate exporter process -- the addon adds a
+	// /metrics HTTP route to Odoo itself, reusing its web port. The addon repository is only
+	// branched up to the Odoo versions its maintainers have published; if spec.version doesn't
+	// have a matching branch there, the addons-download Job will fail to clone it.
+	// +optional
+	Odoo bool `json:"odoo,omitempty"`
 }
 
 // OdooStatus defines the observed state of Odoo.

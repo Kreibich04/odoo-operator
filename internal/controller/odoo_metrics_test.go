@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"strings"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -76,5 +77,78 @@ func TestStatefulSetForRedis_ExporterSidecar(t *testing.T) {
 	}
 	if len(exporter.Ports) != 1 || exporter.Ports[0].Name != "metrics" || exporter.Ports[0].ContainerPort != 9121 {
 		t.Fatalf("expected a single 'metrics' port 9121, got %+v", exporter.Ports)
+	}
+}
+
+func TestEffectiveModules_FoldsInExporterModuleOnlyWhenEnabled(t *testing.T) {
+	odoo := &odoov1alpha1.Odoo{
+		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+		Spec: odoov1alpha1.OdooSpec{
+			Size:    1,
+			Modules: odoov1alpha1.ModulesSpec{Install: []string{"sale", "purchase"}},
+		},
+	}
+
+	without := effectiveModules(odoo)
+	if len(without.Install) != 2 {
+		t.Fatalf("expected the original 2-module install list unchanged, got %v", without.Install)
+	}
+
+	odoo.Spec.Metrics.Odoo = true
+	with := effectiveModules(odoo)
+	if len(with.Install) != 3 || with.Install[2] != metricsExporterModuleName {
+		t.Fatalf("expected %q appended to the install list, got %v", metricsExporterModuleName, with.Install)
+	}
+	// original CR spec must not be mutated by effectiveModules
+	if len(odoo.Spec.Modules.Install) != 2 {
+		t.Fatalf("effectiveModules must not mutate the stored CR spec, got %v", odoo.Spec.Modules.Install)
+	}
+
+	// idempotent: calling twice (e.g. once for hash, once for the install command) doesn't
+	// duplicate the module if it's already present.
+	again := effectiveModules(odoo)
+	if len(again.Install) != 3 {
+		t.Fatalf("expected effectiveModules to be idempotent, got %v", again.Install)
+	}
+}
+
+func TestStatefulSetForOdoo_MetricsPort(t *testing.T) {
+	r := &OdooReconciler{Scheme: runtime.NewScheme()}
+	odoo := &odoov1alpha1.Odoo{
+		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+		Spec:       odoov1alpha1.OdooSpec{Size: 1},
+	}
+
+	without := r.statefulSetForOdoo(odoo, "postgres-host", "test-postgres-secret", "confighash")
+	for _, p := range without.Spec.Template.Spec.Containers[0].Ports {
+		if p.Name == "metrics" {
+			t.Fatalf("did not expect a 'metrics' port when Metrics.Odoo is false, got %+v", without.Spec.Template.Spec.Containers[0].Ports)
+		}
+	}
+
+	odoo.Spec.Metrics.Odoo = true
+	with := r.statefulSetForOdoo(odoo, "postgres-host", "test-postgres-secret", "confighash")
+	found := false
+	for _, p := range with.Spec.Template.Spec.Containers[0].Ports {
+		if p.Name == "metrics" && p.ContainerPort == 8069 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a 'metrics' port on 8069 when Metrics.Odoo is true, got %+v", with.Spec.Template.Spec.Containers[0].Ports)
+	}
+}
+
+func TestConfigMapForOdoo_MetricsAddonsPath(t *testing.T) {
+	r := &OdooReconciler{Scheme: runtime.NewScheme()}
+	odoo := &odoov1alpha1.Odoo{
+		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+		Spec:       odoov1alpha1.OdooSpec{Size: 1, Metrics: odoov1alpha1.MetricsSpec{Odoo: true}},
+	}
+
+	cm := r.configMapForOdoo(odoo, "db-host", "", 0, "", "masterkey")
+	wantPath := "/mnt/extra-addons/" + metricsExporterRepoName
+	if !strings.Contains(cm.Data["odoo.conf"], wantPath) {
+		t.Fatalf("expected addons_path to contain %q, got:\n%s", wantPath, cm.Data["odoo.conf"])
 	}
 }
