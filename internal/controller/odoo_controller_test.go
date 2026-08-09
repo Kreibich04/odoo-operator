@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -467,7 +468,10 @@ var _ = Describe("Odoo Controller", func() {
 
 			// Run reconcile until Job is created (need multiple passes for PVCs etc.)
 			// Job name now includes a repositories-content hash suffix, so list by
-			// the Odoo CR's label instead of a fixed name.
+			// the Odoo CR's label instead of a fixed name. Other Job types (db-init, etc.)
+			// share the same labels, so filter by the addons-download name prefix too --
+			// otherwise a later reconcile pass could pick up the wrong Job non-deterministically.
+			addonsJobPrefix := resourceName + "-addons-download-job-"
 			entJob := &batchv1.Job{}
 
 			Eventually(func() error {
@@ -479,11 +483,13 @@ var _ = Describe("Odoo Controller", func() {
 				if err := k8sClient.List(ctx, jobList, client.InNamespace("default"), client.MatchingLabels{"app": "odoo", "odoo_cr": resourceName}); err != nil {
 					return err
 				}
-				if len(jobList.Items) == 0 {
-					return fmt.Errorf("addons download job not created yet")
+				for i := range jobList.Items {
+					if strings.HasPrefix(jobList.Items[i].Name, addonsJobPrefix) {
+						entJob = &jobList.Items[i]
+						return nil
+					}
 				}
-				entJob = &jobList.Items[0]
-				return nil
+				return fmt.Errorf("addons download job not created yet")
 			}, "10s", "1s").Should(Succeed(), "Addons Job should be created")
 
 			// Check mounts
