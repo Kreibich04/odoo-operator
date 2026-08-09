@@ -957,6 +957,22 @@ func (r *OdooReconciler) reconcileStatefulSet(ctx context.Context, odoo *odoov1a
 			}
 			return &ctrl.Result{Requeue: true}, nil
 		}
+
+		desiredReadiness := desiredSts.Spec.Template.Spec.Containers[0].ReadinessProbe
+		currentReadiness := found.Spec.Template.Spec.Containers[0].ReadinessProbe
+		desiredLiveness := desiredSts.Spec.Template.Spec.Containers[0].LivenessProbe
+		currentLiveness := found.Spec.Template.Spec.Containers[0].LivenessProbe
+		if !equality.Semantic.DeepEqual(currentReadiness, desiredReadiness) || !equality.Semantic.DeepEqual(currentLiveness, desiredLiveness) {
+			log.Info("Updating StatefulSet probes")
+			found.Spec.Template.Spec.Containers[0].ReadinessProbe = desiredReadiness
+			found.Spec.Template.Spec.Containers[0].LivenessProbe = desiredLiveness
+			err = r.Update(ctx, found)
+			if err != nil {
+				log.Error(err, "Failed to update StatefulSet probes")
+				return &ctrl.Result{}, err
+			}
+			return &ctrl.Result{Requeue: true}, nil
+		}
 	}
 
 	// Update annotations (e.g. hash changes)
