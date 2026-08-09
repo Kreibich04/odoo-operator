@@ -63,6 +63,11 @@ const (
 	metricsExporterRepoURL    = "https://github.com/Mint-System/Odoo-Apps-Server-Tools.git"
 )
 
+// pythonDepsTargetDir is where addons-download pip-installs any requirements.txt it finds among
+// the repos it clones (see pythonDepsInstallScript below); PYTHONPATH on the Odoo
+// StatefulSet/Jobs points here too, so those dependencies are actually importable at runtime.
+const pythonDepsTargetDir = "/mnt/extra-addons/.python-site"
+
 // RBAC markers below are trimmed to what the code in this file actually calls (grep-verified: no
 // Patch calls anywhere; Update is only ever called on Odoo itself, ConfigMaps, and StatefulSets;
 // Services are only ever get-or-created, never updated/deleted; Odoo/OdooBackup/OdooRestore CR
@@ -1426,6 +1431,7 @@ func (r *OdooReconciler) statefulSetForOdoo(odoo *odoov1alpha1.Odoo, dbHost, sec
 						},
 						Env: []corev1.EnvVar{
 							{Name: "HOST", Value: dbHost},
+							{Name: "PYTHONPATH", Value: pythonDepsTargetDir},
 							{Name: "POSTGRES_USER", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: secretName}, Key: "user"}}},
 							{Name: "POSTGRES_PASSWORD", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: secretName}, Key: "password"}}},
 						},
@@ -1549,6 +1555,7 @@ func (r *OdooReconciler) jobForOdooInit(odoo *odoov1alpha1.Odoo, dbHost, secretN
 							},
 							Env: []corev1.EnvVar{
 								{Name: "HOST", Value: dbHost},
+								{Name: "PYTHONPATH", Value: pythonDepsTargetDir},
 								{Name: "POSTGRES_USER", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: secretName}, Key: "user"}}},
 								{Name: "POSTGRES_PASSWORD", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: secretName}, Key: "password"}}},
 								{Name: "POSTGRES_DB", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: secretName}, Key: "dbname"}}},
@@ -1663,6 +1670,7 @@ func (r *OdooReconciler) jobForOdooUpgrade(odoo *odoov1alpha1.Odoo, dbHost, secr
 							},
 							Env: []corev1.EnvVar{
 								{Name: "HOST", Value: dbHost},
+								{Name: "PYTHONPATH", Value: pythonDepsTargetDir},
 								{Name: "POSTGRES_USER", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: secretName}, Key: "user"}}},
 								{Name: "POSTGRES_PASSWORD", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: secretName}, Key: "password"}}},
 								{Name: "POSTGRES_DB", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: secretName}, Key: "dbname"}}},
@@ -1771,6 +1779,7 @@ func (r *OdooReconciler) jobForModulesUpdate(odoo *odoov1alpha1.Odoo, dbHost, se
 							},
 							Env: []corev1.EnvVar{
 								{Name: "HOST", Value: dbHost},
+								{Name: "PYTHONPATH", Value: pythonDepsTargetDir},
 								{Name: "POSTGRES_USER", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: secretName}, Key: "user"}}},
 								{Name: "POSTGRES_PASSWORD", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: secretName}, Key: "password"}}},
 								{Name: "POSTGRES_DB", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: secretName}, Key: "dbname"}}},
@@ -1815,9 +1824,32 @@ func (r *OdooReconciler) jobForModulesUpdate(odoo *odoov1alpha1.Odoo, dbHost, se
 	return job
 }
 
+// pythonDepsInstallScript scans every cloned addon repo under /mnt/extra-addons for a
+// requirements.txt (a widely-used OCA/Odoo.sh convention -- e.g. the Mint-System repo used for
+// spec.metrics.odoo ships one, generated from its modules' manifest external_dependencies) and
+// pip-installs any it finds into a shared target directory, so an addon's Python dependencies
+// (not just its code) are actually available once installed. `*/ ` intentionally doesn't match
+// the `.python-site` target itself (POSIX sh glob doesn't match dotfiles/dirs by default).
+const pythonDepsInstallScript = `#!/bin/sh
+set -e
+mkdir -p ` + pythonDepsTargetDir + `
+for dir in /mnt/extra-addons/*/; do
+  repo="${dir%/}"
+  if [ -f "$repo/requirements.txt" ]; then
+    echo "Installing Python dependencies for $(basename "$repo")..."
+    pip3 install --no-cache-dir --target=` + pythonDepsTargetDir + ` -r "$repo/requirements.txt"
+  fi
+done
+`
+
 func (r *OdooReconciler) jobForAddonsDownload(odoo *odoov1alpha1.Odoo, repositories []odoov1alpha1.GitRepositorySpec, sshSecrets []string) *batchv1.Job {
 	ls := labelsForOdoo(odoo.Name)
 	jobName := odoo.Name + "-addons-download-job"
+	odooVersion := odoo.Spec.Version
+	if odooVersion == "" {
+		odooVersion = "19" // Default version, matches the odoo:<version> image tag used elsewhere
+	}
+	odooImage := fmt.Sprintf("odoo:%s", odooVersion)
 
 	var scriptBuilder strings.Builder
 	_, _ = scriptBuilder.WriteString("#!/bin/sh\nset -e\n\n")
@@ -1955,13 +1987,31 @@ fi
 						FSGroup:        func() *int64 { i := int64(1000); return &i }(),
 						SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 					},
-					Containers: []corev1.Container{
+					InitContainers: []corev1.Container{
 						{
 							Name:         "git-clone",
 							Image:        "alpine/git", // A lightweight image with git
 							Command:      []string{"sh", "-c", scriptBuilder.String()},
 							VolumeMounts: volumeMounts,
 							// Reuse init resources for addons download job
+							Resources: odoo.Spec.Resources.Init,
+							SecurityContext: &corev1.SecurityContext{
+								AllowPrivilegeEscalation: func() *bool { b := false; return &b }(),
+								Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+							},
+						},
+					},
+					Containers: []corev1.Container{
+						{
+							// Runs after git-clone (init containers run sequentially), using the
+							// same odoo:<version> image so any pip-installed packages match the
+							// exact Python/libc the Odoo containers actually run with.
+							Name:    "install-python-deps",
+							Image:   odooImage,
+							Command: []string{"sh", "-c", pythonDepsInstallScript},
+							VolumeMounts: []corev1.VolumeMount{
+								{Name: "odoo-addons-all", MountPath: "/mnt/extra-addons"},
+							},
 							Resources: odoo.Spec.Resources.Init,
 							SecurityContext: &corev1.SecurityContext{
 								AllowPrivilegeEscalation: func() *bool { b := false; return &b }(),

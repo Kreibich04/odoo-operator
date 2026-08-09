@@ -152,3 +152,29 @@ func TestConfigMapForOdoo_MetricsAddonsPath(t *testing.T) {
 		t.Fatalf("expected addons_path to contain %q, got:\n%s", wantPath, cm.Data["odoo.conf"])
 	}
 }
+
+func TestJobForAddonsDownload_PythonDepsInstallStep(t *testing.T) {
+	r := &OdooReconciler{Scheme: runtime.NewScheme()}
+	odoo := &odoov1alpha1.Odoo{
+		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+		Spec:       odoov1alpha1.OdooSpec{Size: 1, Version: "19.0"},
+	}
+	repos := []odoov1alpha1.GitRepositorySpec{{Name: metricsExporterRepoName, URL: metricsExporterRepoURL, Version: "19.0"}}
+
+	job := r.jobForAddonsDownload(odoo, repos, nil)
+	spec := job.Spec.Template.Spec
+
+	if len(spec.InitContainers) != 1 || spec.InitContainers[0].Name != "git-clone" {
+		t.Fatalf("expected git-clone to run as the (sole) init container, got %+v", spec.InitContainers)
+	}
+	if len(spec.Containers) != 1 || spec.Containers[0].Name != "install-python-deps" {
+		t.Fatalf("expected install-python-deps as the main container, got %+v", spec.Containers)
+	}
+	pyDeps := spec.Containers[0]
+	if pyDeps.Image != "odoo:19.0" {
+		t.Fatalf("expected install-python-deps to use the same odoo:<version> image, got %q", pyDeps.Image)
+	}
+	if !strings.Contains(pyDeps.Command[len(pyDeps.Command)-1], pythonDepsTargetDir) {
+		t.Fatalf("expected the install script to reference %q", pythonDepsTargetDir)
+	}
+}
