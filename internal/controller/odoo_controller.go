@@ -1271,7 +1271,9 @@ func (r *OdooReconciler) jobForOdooInit(odoo *odoov1alpha1.Odoo, dbHost, secretN
 			Labels:    ls,
 		},
 		Spec: batchv1.JobSpec{
-			TTLSecondsAfterFinished: func() *int32 { i := int32(3600); return &i }(),
+			// No TTLSecondsAfterFinished: reconcileInitJob's only "already ran" signal is this
+			// Job's existence under its static name. TTL-GC'ing it would make the next reconcile
+			// see it as NotFound and re-run db-init against an already-initialized database.
 			Template: corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
 					RestartPolicy: corev1.RestartPolicyOnFailure,
@@ -1707,7 +1709,10 @@ fi
 			Labels:    ls,
 		},
 		Spec: batchv1.JobSpec{
-			TTLSecondsAfterFinished: func() *int32 { i := int32(3600); return &i }(),
+			// No TTLSecondsAfterFinished: reconcileAddonsDownload's only "already ran" signal is
+			// this Job's existence under its content-hashed name (no separate hash persisted in
+			// status). TTL-GC'ing it would make the next reconcile see it as NotFound and re-clone
+			// the same unchanged repos again, forever, on a ~1h cycle.
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: ls,
