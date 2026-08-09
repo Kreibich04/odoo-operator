@@ -48,7 +48,7 @@ func TestStatefulSetForPostgres_ExporterSidecar(t *testing.T) {
 	if exporter.Name != "postgres-exporter" {
 		t.Fatalf("expected second container to be postgres-exporter, got %q", exporter.Name)
 	}
-	if len(exporter.Ports) != 1 || exporter.Ports[0].Name != "metrics" || exporter.Ports[0].ContainerPort != 9187 {
+	if len(exporter.Ports) != 1 || exporter.Ports[0].Name != metricsPortName || exporter.Ports[0].ContainerPort != 9187 {
 		t.Fatalf("expected a single 'metrics' port 9187, got %+v", exporter.Ports)
 	}
 }
@@ -75,7 +75,7 @@ func TestStatefulSetForRedis_ExporterSidecar(t *testing.T) {
 	if exporter.Name != "redis-exporter" {
 		t.Fatalf("expected second container to be redis-exporter, got %q", exporter.Name)
 	}
-	if len(exporter.Ports) != 1 || exporter.Ports[0].Name != "metrics" || exporter.Ports[0].ContainerPort != 9121 {
+	if len(exporter.Ports) != 1 || exporter.Ports[0].Name != metricsPortName || exporter.Ports[0].ContainerPort != 9121 {
 		t.Fatalf("expected a single 'metrics' port 9121, got %+v", exporter.Ports)
 	}
 }
@@ -121,7 +121,7 @@ func TestStatefulSetForOdoo_MetricsPort(t *testing.T) {
 
 	without := r.statefulSetForOdoo(odoo, "postgres-host", "test-postgres-secret", "confighash")
 	for _, p := range without.Spec.Template.Spec.Containers[0].Ports {
-		if p.Name == "metrics" {
+		if p.Name == metricsPortName {
 			t.Fatalf("did not expect a 'metrics' port when Metrics.Odoo is false, got %+v", without.Spec.Template.Spec.Containers[0].Ports)
 		}
 	}
@@ -130,7 +130,7 @@ func TestStatefulSetForOdoo_MetricsPort(t *testing.T) {
 	with := r.statefulSetForOdoo(odoo, "postgres-host", "test-postgres-secret", "confighash")
 	found := false
 	for _, p := range with.Spec.Template.Spec.Containers[0].Ports {
-		if p.Name == "metrics" && p.ContainerPort == 8069 {
+		if p.Name == metricsPortName && p.ContainerPort == 8069 {
 			found = true
 		}
 	}

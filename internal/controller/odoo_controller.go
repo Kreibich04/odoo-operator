@@ -61,6 +61,9 @@ const (
 	metricsExporterModuleName = "prometheus_exporter"
 	metricsExporterRepoName   = "odoo-metrics-exporter"
 	metricsExporterRepoURL    = "https://github.com/Mint-System/Odoo-Apps-Server-Tools.git"
+	// Container port name shared by the Postgres/Redis exporter sidecars and the Odoo
+	// container itself once spec.metrics.odoo is enabled; the PodMonitor selects on it.
+	metricsPortName = "metrics"
 )
 
 // pythonDepsTargetDir is where addons-download pip-installs any requirements.txt it finds among
@@ -1456,7 +1459,7 @@ func (r *OdooReconciler) statefulSetForOdoo(odoo *odoov1alpha1.Odoo, dbHost, sec
 	// PodMonitor scrapes by port name, and only wants this pod when the addon is actually enabled.
 	if odoo.Spec.Metrics.Odoo {
 		dep.Spec.Template.Spec.Containers[0].Ports = append(dep.Spec.Template.Spec.Containers[0].Ports,
-			corev1.ContainerPort{ContainerPort: 8069, Name: "metrics"})
+			corev1.ContainerPort{ContainerPort: 8069, Name: metricsPortName})
 	}
 
 	// Conditionally add the log volume and mounts
@@ -2521,7 +2524,7 @@ func (r *OdooReconciler) statefulSetForPostgres(odoo *odoov1alpha1.Odoo, secretN
 			Name:  "postgres-exporter",
 			Image: "quay.io/prometheuscommunity/postgres-exporter:v0.15.0",
 			Ports: []corev1.ContainerPort{
-				{ContainerPort: 9187, Name: "metrics"},
+				{ContainerPort: 9187, Name: metricsPortName},
 			},
 			Env: []corev1.EnvVar{
 				{Name: "DATA_SOURCE_USER", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: secretName}, Key: "user"}}},
@@ -2590,7 +2593,7 @@ func (r *OdooReconciler) statefulSetForRedis(odoo *odoov1alpha1.Odoo, redisSecre
 			Name:  "redis-exporter",
 			Image: "oliver006/redis_exporter:v1.62.0",
 			Ports: []corev1.ContainerPort{
-				{ContainerPort: 9121, Name: "metrics"},
+				{ContainerPort: 9121, Name: metricsPortName},
 			},
 			Env: []corev1.EnvVar{
 				{Name: "REDIS_ADDR", Value: "redis://localhost:6379"},
