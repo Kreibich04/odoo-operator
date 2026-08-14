@@ -64,23 +64,17 @@ func (r *OdooRestoreReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, nil
 	}
 
-	if n := len(restore.Status.Conditions); n > 0 {
-		last := restore.Status.Conditions[n-1]
-		if last.Type == "Ready" && last.Status == metav1.ConditionFalse && last.Reason == "NotImplemented" {
-			return ctrl.Result{}, nil
-		}
-	}
-
-	restore.Status.Conditions = append(restore.Status.Conditions, metav1.Condition{
-		Type:               "Ready",
-		Status:             metav1.ConditionFalse,
-		Reason:             "NotImplemented",
-		Message:            "OdooRestore is not implemented yet: neither the StopAndRestore nor the NewPVC restoreMethod restores any data. No Job is created.",
-		LastTransitionTime: metav1.Now(),
+	changed := upsertCondition(&restore.Status.Conditions, metav1.Condition{
+		Type:    "Ready",
+		Status:  metav1.ConditionFalse,
+		Reason:  "NotImplemented",
+		Message: "OdooRestore is not implemented yet: neither the StopAndRestore nor the NewPVC restoreMethod restores any data. No Job is created.",
 	})
-	if err := r.Status().Update(ctx, restore); err != nil {
-		log.Error(err, "Failed to update OdooRestore status")
-		return ctrl.Result{}, err
+	if changed {
+		if err := r.Status().Update(ctx, restore); err != nil {
+			log.Error(err, "Failed to update OdooRestore status")
+			return ctrl.Result{}, err
+		}
 	}
 
 	return ctrl.Result{}, nil

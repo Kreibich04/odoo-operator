@@ -47,19 +47,10 @@ type OdooBackupReconciler struct {
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch
 
-// setBackupCondition appends a condition, replacing the previous entry of the same
-// Type if it already reflects the same Status/Reason (avoids growing the condition
-// list on every reconcile while the backup sits in the same state).
+// setBackupCondition upserts a condition by Type (see upsertCondition), avoiding growing the
+// condition list on every reconcile while the backup sits in the same state.
 func setBackupCondition(backup *odoov1alpha1.OdooBackup, condition metav1.Condition) bool {
-	if n := len(backup.Status.Conditions); n > 0 {
-		last := backup.Status.Conditions[n-1]
-		if last.Type == condition.Type && last.Status == condition.Status && last.Reason == condition.Reason {
-			return false
-		}
-	}
-	condition.LastTransitionTime = metav1.Now()
-	backup.Status.Conditions = append(backup.Status.Conditions, condition)
-	return true
+	return upsertCondition(&backup.Status.Conditions, condition)
 }
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to

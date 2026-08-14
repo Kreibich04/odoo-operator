@@ -2055,26 +2055,28 @@ func (r *OdooReconciler) serviceForOdoo(odoo *odoov1alpha1.Odoo, name string) *c
 }
 
 func (r *OdooReconciler) setOdooCondition(status *odoov1alpha1.OdooStatus, condition metav1.Condition) {
-	// Helper function to set a condition on the Odoo status.
-	// This function will update an existing condition or add a new one.
-	if status.Conditions == nil {
-		status.Conditions = make([]metav1.Condition, 0)
-	}
+	upsertCondition(&status.Conditions, condition)
+}
 
-	now := metav1.Now()
-	condition.LastTransitionTime = now
-
-	for i, c := range status.Conditions {
+// upsertCondition sets condition in *conditions, replacing any existing entry of the same
+// Type in place instead of appending -- the OdooBackup/OdooRestore/Odoo CRDs all declare
+// their conditions list with patchMergeKey=type, so more than one entry per Type violates
+// that contract and confuses anything reading conditions by Type (e.g. kubectl's
+// additionalPrinterColumns, or apimachinery's meta.FindStatusCondition, both of which return
+// the first match). Returns whether anything changed.
+func upsertCondition(conditions *[]metav1.Condition, condition metav1.Condition) bool {
+	condition.LastTransitionTime = metav1.Now()
+	for i, c := range *conditions {
 		if c.Type == condition.Type {
-			// Update existing condition only if the status or reason has changed
-			if c.Status != condition.Status || c.Reason != condition.Reason {
-				status.Conditions[i] = condition
+			if c.Status == condition.Status && c.Reason == condition.Reason {
+				return false
 			}
-			return
+			(*conditions)[i] = condition
+			return true
 		}
 	}
-	// Add new condition
-	status.Conditions = append(status.Conditions, condition)
+	*conditions = append(*conditions, condition)
+	return true
 }
 
 func (r *OdooReconciler) ingressForOdoo(odoo *odoov1alpha1.Odoo) *networkingv1.Ingress {
