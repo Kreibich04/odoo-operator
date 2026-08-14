@@ -19,7 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
-	"strings"
+	"path"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -84,10 +84,26 @@ func (r *OdooBackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, nil
 	}
 
-	// Resolve the target Odoo instance
+	// Resolve the target Odoo instance. Cross-namespace odooRef isn't supported: the backup
+	// Job (and its SecretKeyRef into the Odoo DB secret) is always created in backup.Namespace,
+	// and Secret references can't cross namespaces, so a different odooRef.namespace would only
+	// fail confusingly at Job runtime. Refuse explicitly instead.
 	odooNamespace := backup.Spec.OdooRef.Namespace
 	if odooNamespace == "" {
 		odooNamespace = backup.Namespace
+	} else if odooNamespace != backup.Namespace {
+		if setBackupCondition(backup, metav1.Condition{
+			Type:    "Ready",
+			Status:  metav1.ConditionFalse,
+			Reason:  "NotImplemented",
+			Message: fmt.Sprintf("odooRef.namespace (%s) must match the OdooBackup's own namespace (%s); cross-namespace backups are not supported.", odooNamespace, backup.Namespace),
+		}) {
+			if err := r.Status().Update(ctx, backup); err != nil {
+				log.Error(err, "Failed to update OdooBackup status")
+				return ctrl.Result{}, err
+			}
+		}
+		return ctrl.Result{}, nil
 	}
 	odoo := &odoov1alpha1.Odoo{}
 	if err := r.Get(ctx, types.NamespacedName{Name: backup.Spec.OdooRef.Name, Namespace: odooNamespace}, odoo); err != nil {
@@ -172,9 +188,14 @@ func (r *OdooBackupReconciler) jobForBackup(backup *odoov1alpha1.OdooBackup, dbH
 		postgresVersion = "16"
 	}
 
+	// path.Clean rooted at "/" can't escape above the root (Go collapses ".." segments there
+	// instead of climbing past it), so a spec.storageLocation.pvc.path like "../../etc" can't
+	// break out of the backup-storage mount.
 	backupDir := "/backup"
-	if path := strings.Trim(backup.Spec.StorageLocation.PVC.Path, "/"); path != "" {
-		backupDir = "/backup/" + path
+	if raw := backup.Spec.StorageLocation.PVC.Path; raw != "" {
+		if cleaned := path.Clean("/" + raw); cleaned != "/" {
+			backupDir = "/backup" + cleaned
+		}
 	}
 	script := fmt.Sprintf(`set -e
 FILE="%s/%s-$(date +%%Y%%m%%d%%H%%M%%S).dump"
