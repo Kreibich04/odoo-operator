@@ -24,7 +24,7 @@ spec:
     - jsonPath: .status.lastBackupTime
       name: Last Backup
       type: date
-    - jsonPath: .status.conditions[?(@.type=='Ready')].reason
+    - jsonPath: .status.conditions[?(@.type=='Completed')].reason
       name: Status
       type: string
     - jsonPath: .metadata.creationTimestamp

@@ -278,6 +278,27 @@ func (r *OdooReconciler) reconcileDatabase(ctx context.Context, odoo *odoov1alph
 	return dbHost, secretName, nil, nil
 }
 
+// resolveDatabaseConnection returns the DB host and credentials-secret name for an
+// Odoo CR without any side effects (no creates/reads beyond the CR itself). It mirrors
+// the derivation in reconcileDatabase; kept separate rather than shared since
+// reconcileDatabase also creates the managed Postgres secret/PVC/service/statefulset,
+// which callers like OdooBackup must not trigger.
+func resolveDatabaseConnection(odoo *odoov1alpha1.Odoo) (dbHost, secretName string, err error) {
+	if odoo.Spec.Database.Host != "" {
+		if odoo.Spec.DatabaseSecretName == "" {
+			return "", "", fmt.Errorf("databaseSecretName must be provided when using an external database")
+		}
+		return odoo.Spec.Database.Host, odoo.Spec.DatabaseSecretName, nil
+	}
+
+	dbHost = fmt.Sprintf("%s-postgres-svc.%s.svc.cluster.local", odoo.Name, odoo.Namespace)
+	secretName = odoo.Spec.DatabaseSecretName
+	if secretName == "" {
+		secretName = odoo.Name + "-postgres-secret"
+	}
+	return dbHost, secretName, nil
+}
+
 // reconcileRedis manages the Redis instance for session storage.
 // It returns the Redis host, port, password (if any), and any reconciliation result/error.
 func (r *OdooReconciler) reconcileRedis(ctx context.Context, odoo *odoov1alpha1.Odoo) (string, int32, string, *ctrl.Result, error) {
@@ -2034,26 +2055,28 @@ func (r *OdooReconciler) serviceForOdoo(odoo *odoov1alpha1.Odoo, name string) *c
 }
 
 func (r *OdooReconciler) setOdooCondition(status *odoov1alpha1.OdooStatus, condition metav1.Condition) {
-	// Helper function to set a condition on the Odoo status.
-	// This function will update an existing condition or add a new one.
-	if status.Conditions == nil {
-		status.Conditions = make([]metav1.Condition, 0)
-	}
+	upsertCondition(&status.Conditions, condition)
+}
 
-	now := metav1.Now()
-	condition.LastTransitionTime = now
-
-	for i, c := range status.Conditions {
+// upsertCondition sets condition in *conditions, replacing any existing entry of the same
+// Type in place instead of appending -- the OdooBackup/OdooRestore/Odoo CRDs all declare
+// their conditions list with patchMergeKey=type, so more than one entry per Type violates
+// that contract and confuses anything reading conditions by Type (e.g. kubectl's
+// additionalPrinterColumns, or apimachinery's meta.FindStatusCondition, both of which return
+// the first match). Returns whether anything changed.
+func upsertCondition(conditions *[]metav1.Condition, condition metav1.Condition) bool {
+	condition.LastTransitionTime = metav1.Now()
+	for i, c := range *conditions {
 		if c.Type == condition.Type {
-			// Update existing condition only if the status or reason has changed
-			if c.Status != condition.Status || c.Reason != condition.Reason {
-				status.Conditions[i] = condition
+			if c.Status == condition.Status && c.Reason == condition.Reason {
+				return false
 			}
-			return
+			(*conditions)[i] = condition
+			return true
 		}
 	}
-	// Add new condition
-	status.Conditions = append(status.Conditions, condition)
+	*conditions = append(*conditions, condition)
+	return true
 }
 
 func (r *OdooReconciler) ingressForOdoo(odoo *odoov1alpha1.Odoo) *networkingv1.Ingress {
@@ -2064,13 +2087,18 @@ func (r *OdooReconciler) ingressForOdoo(odoo *odoov1alpha1.Odoo) *networkingv1.I
 		ingressClassName = *odoo.Spec.Ingress.IngressClassName
 	}
 
-	// Define default annotations
-	annotations := map[string]string{
-		"nginx.ingress.kubernetes.io/proxy-read-timeout":       "720s",
-		"nginx.ingress.kubernetes.io/proxy-send-timeout":       "720s",
-		"nginx.ingress.kubernetes.io/proxy-body-size":          "512m",
-		"nginx.ingress.kubernetes.io/ssl-redirect":             "true",
-		"nginx.ingress.kubernetes.io/proxy-max-temp-file-size": "2048m",
+	// Default annotations only make sense for the nginx ingress controller; seeding
+	// them regardless of ingressClassName pollutes GKE/ALB/Traefik/Contour Ingresses
+	// with annotations they don't understand.
+	annotations := map[string]string{}
+	if ingressClassName == "nginx" {
+		annotations = map[string]string{
+			"nginx.ingress.kubernetes.io/proxy-read-timeout":       "720s",
+			"nginx.ingress.kubernetes.io/proxy-send-timeout":       "720s",
+			"nginx.ingress.kubernetes.io/proxy-body-size":          "512m",
+			"nginx.ingress.kubernetes.io/ssl-redirect":             "true",
+			"nginx.ingress.kubernetes.io/proxy-max-temp-file-size": "2048m",
+		}
 	}
 
 	// Merge with annotations from the CR, with CR annotations taking precedence

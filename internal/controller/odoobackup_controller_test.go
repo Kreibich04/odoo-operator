@@ -45,6 +45,38 @@ var _ = Describe("OdooBackup Controller", func() {
 		backup := &odoov1alpha1.OdooBackup{}
 
 		BeforeEach(func() {
+			By("creating the referenced Odoo resource and its database secret")
+			odoo := &odoov1alpha1.Odoo{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: "test-odoo", Namespace: "default"}, odoo); err != nil {
+				resource := &odoov1alpha1.Odoo{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-odoo",
+						Namespace: "default",
+					},
+					Spec: odoov1alpha1.OdooSpec{
+						Size:               1,
+						DatabaseSecretName: "test-odoo-postgres-secret",
+					},
+				}
+				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
+			}
+
+			secret := &corev1.Secret{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: "test-odoo-postgres-secret", Namespace: "default"}, secret); err != nil {
+				resource := &corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-odoo-postgres-secret",
+						Namespace: "default",
+					},
+					StringData: map[string]string{
+						"user":     "odoo",
+						"password": "odoo",
+						"dbname":   "odoo",
+					},
+				}
+				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
+			}
+
 			By("creating the custom resource for the Kind OdooBackup")
 			err := k8sClient.Get(ctx, typeNamespacedName, backup)
 			// Create if not exists
@@ -80,6 +112,14 @@ var _ = Describe("OdooBackup Controller", func() {
 			err = k8sClient.Get(ctx, types.NamespacedName{Name: resourceName + "-job", Namespace: "default"}, job)
 			if err == nil {
 				_ = k8sClient.Delete(ctx, job)
+			}
+			odoo := &odoov1alpha1.Odoo{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: "test-odoo", Namespace: "default"}, odoo); err == nil {
+				_ = k8sClient.Delete(ctx, odoo)
+			}
+			secret := &corev1.Secret{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: "test-odoo-postgres-secret", Namespace: "default"}, secret); err == nil {
+				_ = k8sClient.Delete(ctx, secret)
 			}
 		})
 
