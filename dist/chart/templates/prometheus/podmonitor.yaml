@@ -1,0 +1,29 @@
+{{- if .Values.prometheus.podMonitor.enable }}
+# Scrapes workload exporter sidecars (postgres_exporter/redis_exporter, see MetricsSpec on the
+# Odoo CRD) directly by pod, across every Odoo instance this operator manages. Matches on the
+# "app: odoo" label plus a container port literally named "metrics" -- only the exporter sidecars
+# declare that port name, so this naturally excludes the Odoo/Postgres/Redis application
+# containers themselves without needing any extra distinguishing label.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  labels:
+    {{- include "chart.labels" . | nindent 4 }}
+  name: operator-workload-metrics-monitor
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    matchLabels:
+      app: odoo
+  {{- if .Values.prometheus.podMonitor.namespaces }}
+  namespaceSelector:
+    matchNames:
+      {{- toYaml .Values.prometheus.podMonitor.namespaces | nindent 6 }}
+  {{- else }}
+  namespaceSelector:
+    any: true
+  {{- end }}
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
+{{- end -}}

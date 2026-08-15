@@ -53,6 +53,24 @@ type OdooReconciler struct {
 	Scheme *runtime.Scheme
 }
 
+// Third-party addon used for spec.metrics.odoo (see MetricsSpec) -- Odoo has no built-in
+// Prometheus endpoint, unlike Postgres/Redis this adds an in-process /metrics HTTP route rather
+// than a sidecar. Branch layout is OCA-style (one branch per Odoo version); the repo's
+// maintainers may not have caught up to every Odoo version this operator can install.
+const (
+	metricsExporterModuleName = "prometheus_exporter"
+	metricsExporterRepoName   = "odoo-metrics-exporter"
+	metricsExporterRepoURL    = "https://github.com/Mint-System/Odoo-Apps-Server-Tools.git"
+	// Container port name shared by the Postgres/Redis exporter sidecars and the Odoo
+	// container itself once spec.metrics.odoo is enabled; the PodMonitor selects on it.
+	metricsPortName = "metrics"
+)
+
+// pythonDepsTargetDir is where addons-download pip-installs any requirements.txt it finds among
+// the repos it clones (see pythonDepsInstallScript below); PYTHONPATH on the Odoo
+// StatefulSet/Jobs points here too, so those dependencies are actually importable at runtime.
+const pythonDepsTargetDir = "/mnt/extra-addons/.python-site"
+
 // RBAC markers below are trimmed to what the code in this file actually calls (grep-verified: no
 // Patch calls anywhere; Update is only ever called on Odoo itself, ConfigMaps, and StatefulSets;
 // Services are only ever get-or-created, never updated/deleted; Odoo/OdooBackup/OdooRestore CR
@@ -554,6 +572,28 @@ func (r *OdooReconciler) reconcileAddonsDownload(ctx context.Context, odoo *odoo
 		}
 	}
 
+	// Add the metrics-exporter addon repo if enabled (see MetricsSpec.Odoo), unless the user
+	// already declared their own repo under that name (e.g. to pin a fork) -- adding both would
+	// clone the same TARGET_DIR twice, possibly with conflicting URL/version.
+	userHasMetricsExporterRepo := false
+	for _, customRepo := range odoo.Spec.Modules.Repositories {
+		if customRepo.Name == metricsExporterRepoName {
+			userHasMetricsExporterRepo = true
+			break
+		}
+	}
+	if odoo.Spec.Metrics.Odoo && !userHasMetricsExporterRepo {
+		odooVersion := odoo.Spec.Version
+		if odooVersion == "" {
+			odooVersion = "19" // Default version, matches the odoo:<version> image tag used elsewhere
+		}
+		repositoriesToClone = append(repositoriesToClone, odoov1alpha1.GitRepositorySpec{
+			Name:    metricsExporterRepoName,
+			URL:     metricsExporterRepoURL,
+			Version: odooVersion,
+		})
+	}
+
 	// Add custom repositories
 	for _, customRepo := range odoo.Spec.Modules.Repositories {
 		repositoriesToClone = append(repositoriesToClone, customRepo)
@@ -754,7 +794,7 @@ func (r *OdooReconciler) reconcileUpgrade(ctx context.Context, odoo *odoov1alpha
 			log.Info("First installation detected, setting CurrentVersion", "Version", targetVersion)
 			odoo.Status.CurrentVersion = targetVersion
 
-			initialHash, err := computeModulesHash(odoo.Spec.Modules)
+			initialHash, err := computeModulesHash(effectiveModules(odoo))
 			if err == nil {
 				odoo.Status.ModulesHash = initialHash
 			}
@@ -839,7 +879,7 @@ func (r *OdooReconciler) reconcileUpgrade(ctx context.Context, odoo *odoov1alpha
 func (r *OdooReconciler) reconcileModulesUpdate(ctx context.Context, odoo *odoov1alpha1.Odoo, dbHost, secretName string) (*ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 	currentModulesHash := odoo.Status.ModulesHash
-	targetModulesHash, err := computeModulesHash(odoo.Spec.Modules)
+	targetModulesHash, err := computeModulesHash(effectiveModules(odoo))
 	if err != nil {
 		log.Error(err, "Failed to compute modules hash")
 		return &ctrl.Result{}, err
@@ -1403,6 +1443,7 @@ func (r *OdooReconciler) statefulSetForOdoo(odoo *odoov1alpha1.Odoo, dbHost, sec
 						},
 						Env: []corev1.EnvVar{
 							{Name: "HOST", Value: dbHost},
+							{Name: "PYTHONPATH", Value: pythonDepsTargetDir},
 							{Name: "POSTGRES_USER", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: secretName}, Key: "user"}}},
 							{Name: "POSTGRES_PASSWORD", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: secretName}, Key: "password"}}},
 						},
@@ -1420,6 +1461,14 @@ func (r *OdooReconciler) statefulSetForOdoo(odoo *odoov1alpha1.Odoo, dbHost, sec
 				},
 			},
 		},
+	}
+
+	// Expose the prometheus_exporter addon's /metrics route (see MetricsSpec.Odoo) on a named
+	// port distinct from "web", even though both are the same 8069 Odoo HTTP port -- the chart's
+	// PodMonitor scrapes by port name, and only wants this pod when the addon is actually enabled.
+	if odoo.Spec.Metrics.Odoo {
+		dep.Spec.Template.Spec.Containers[0].Ports = append(dep.Spec.Template.Spec.Containers[0].Ports,
+			corev1.ContainerPort{ContainerPort: 8069, Name: metricsPortName})
 	}
 
 	// Conditionally add the log volume and mounts
@@ -1456,9 +1505,10 @@ func (r *OdooReconciler) jobForOdooInit(odoo *odoov1alpha1.Odoo, dbHost, secretN
 	odooImage := fmt.Sprintf("odoo:%s", odooVersion)
 
 	// Build modules to install string
+	install := effectiveModules(odoo).Install
 	modulesToInstall := ""
-	if len(odoo.Spec.Modules.Install) > 0 {
-		modulesToInstall = "," + strings.Join(odoo.Spec.Modules.Install, ",")
+	if len(install) > 0 {
+		modulesToInstall = "," + strings.Join(install, ",")
 	}
 
 	job := &batchv1.Job{
@@ -1517,6 +1567,7 @@ func (r *OdooReconciler) jobForOdooInit(odoo *odoov1alpha1.Odoo, dbHost, secretN
 							},
 							Env: []corev1.EnvVar{
 								{Name: "HOST", Value: dbHost},
+								{Name: "PYTHONPATH", Value: pythonDepsTargetDir},
 								{Name: "POSTGRES_USER", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: secretName}, Key: "user"}}},
 								{Name: "POSTGRES_PASSWORD", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: secretName}, Key: "password"}}},
 								{Name: "POSTGRES_DB", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: secretName}, Key: "dbname"}}},
@@ -1573,8 +1624,8 @@ func (r *OdooReconciler) jobForOdooUpgrade(odoo *odoov1alpha1.Odoo, dbHost, secr
 	modulesToUpgrade := odoo.Spec.Upgrade.Modules // Use specific upgrade modules if defined
 	if modulesToUpgrade == "" {
 		// Fallback to install list for upgrade if no specific upgrade modules are provided
-		if len(odoo.Spec.Modules.Install) > 0 {
-			modulesToUpgrade = strings.Join(odoo.Spec.Modules.Install, ",")
+		if install := effectiveModules(odoo).Install; len(install) > 0 {
+			modulesToUpgrade = strings.Join(install, ",")
 		} else {
 			modulesToUpgrade = "all" // Default to all if nothing specified
 		}
@@ -1631,6 +1682,7 @@ func (r *OdooReconciler) jobForOdooUpgrade(odoo *odoov1alpha1.Odoo, dbHost, secr
 							},
 							Env: []corev1.EnvVar{
 								{Name: "HOST", Value: dbHost},
+								{Name: "PYTHONPATH", Value: pythonDepsTargetDir},
 								{Name: "POSTGRES_USER", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: secretName}, Key: "user"}}},
 								{Name: "POSTGRES_PASSWORD", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: secretName}, Key: "password"}}},
 								{Name: "POSTGRES_DB", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: secretName}, Key: "dbname"}}},
@@ -1687,8 +1739,8 @@ func (r *OdooReconciler) jobForModulesUpdate(odoo *odoov1alpha1.Odoo, dbHost, se
 
 	// Use install list for modules update
 	modulesToInstall := "base" // Always include base to be safe, or just the list
-	if len(odoo.Spec.Modules.Install) > 0 {
-		modulesToInstall = strings.Join(odoo.Spec.Modules.Install, ",")
+	if install := effectiveModules(odoo).Install; len(install) > 0 {
+		modulesToInstall = strings.Join(install, ",")
 	}
 
 	// Generate a deterministic name for the update job is handled by the caller (reconcileModulesUpdate)
@@ -1739,6 +1791,7 @@ func (r *OdooReconciler) jobForModulesUpdate(odoo *odoov1alpha1.Odoo, dbHost, se
 							},
 							Env: []corev1.EnvVar{
 								{Name: "HOST", Value: dbHost},
+								{Name: "PYTHONPATH", Value: pythonDepsTargetDir},
 								{Name: "POSTGRES_USER", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: secretName}, Key: "user"}}},
 								{Name: "POSTGRES_PASSWORD", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: secretName}, Key: "password"}}},
 								{Name: "POSTGRES_DB", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: secretName}, Key: "dbname"}}},
@@ -1783,9 +1836,32 @@ func (r *OdooReconciler) jobForModulesUpdate(odoo *odoov1alpha1.Odoo, dbHost, se
 	return job
 }
 
+// pythonDepsInstallScript scans every cloned addon repo under /mnt/extra-addons for a
+// requirements.txt (a widely-used OCA/Odoo.sh convention -- e.g. the Mint-System repo used for
+// spec.metrics.odoo ships one, generated from its modules' manifest external_dependencies) and
+// pip-installs any it finds into a shared target directory, so an addon's Python dependencies
+// (not just its code) are actually available once installed. `*/ ` intentionally doesn't match
+// the `.python-site` target itself (POSIX sh glob doesn't match dotfiles/dirs by default).
+const pythonDepsInstallScript = `#!/bin/sh
+set -e
+mkdir -p ` + pythonDepsTargetDir + `
+for dir in /mnt/extra-addons/*/; do
+  repo="${dir%/}"
+  if [ -f "$repo/requirements.txt" ]; then
+    echo "Installing Python dependencies for $(basename "$repo")..."
+    pip3 install --no-cache-dir --target=` + pythonDepsTargetDir + ` -r "$repo/requirements.txt"
+  fi
+done
+`
+
 func (r *OdooReconciler) jobForAddonsDownload(odoo *odoov1alpha1.Odoo, repositories []odoov1alpha1.GitRepositorySpec, sshSecrets []string) *batchv1.Job {
 	ls := labelsForOdoo(odoo.Name)
 	jobName := odoo.Name + "-addons-download-job"
+	odooVersion := odoo.Spec.Version
+	if odooVersion == "" {
+		odooVersion = "19" // Default version, matches the odoo:<version> image tag used elsewhere
+	}
+	odooImage := fmt.Sprintf("odoo:%s", odooVersion)
 
 	var scriptBuilder strings.Builder
 	_, _ = scriptBuilder.WriteString("#!/bin/sh\nset -e\n\n")
@@ -1923,13 +1999,31 @@ fi
 						FSGroup:        func() *int64 { i := int64(1000); return &i }(),
 						SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 					},
-					Containers: []corev1.Container{
+					InitContainers: []corev1.Container{
 						{
 							Name:         "git-clone",
 							Image:        "alpine/git", // A lightweight image with git
 							Command:      []string{"sh", "-c", scriptBuilder.String()},
 							VolumeMounts: volumeMounts,
 							// Reuse init resources for addons download job
+							Resources: odoo.Spec.Resources.Init,
+							SecurityContext: &corev1.SecurityContext{
+								AllowPrivilegeEscalation: func() *bool { b := false; return &b }(),
+								Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+							},
+						},
+					},
+					Containers: []corev1.Container{
+						{
+							// Runs after git-clone (init containers run sequentially), using the
+							// same odoo:<version> image so any pip-installed packages match the
+							// exact Python/libc the Odoo containers actually run with.
+							Name:    "install-python-deps",
+							Image:   odooImage,
+							Command: []string{"sh", "-c", pythonDepsInstallScript},
+							VolumeMounts: []corev1.VolumeMount{
+								{Name: "odoo-addons-all", MountPath: "/mnt/extra-addons"},
+							},
 							Resources: odoo.Spec.Resources.Init,
 							SecurityContext: &corev1.SecurityContext{
 								AllowPrivilegeEscalation: func() *bool { b := false; return &b }(),
@@ -2024,6 +2118,11 @@ func (r *OdooReconciler) configMapForOdoo(odoo *odoov1alpha1.Odoo, dbHost string
 	// Add Enterprise path if enabled
 	if odoo.Spec.Enterprise.Enabled {
 		addonsPathParts = append(addonsPathParts, "/mnt/extra-addons/enterprise")
+	}
+
+	// Add the metrics-exporter addon path if enabled (see MetricsSpec.Odoo)
+	if odoo.Spec.Metrics.Odoo {
+		addonsPathParts = append(addonsPathParts, "/mnt/extra-addons/"+metricsExporterRepoName)
 	}
 
 	// Add custom repositories paths
@@ -2428,6 +2527,27 @@ func (r *OdooReconciler) statefulSetForPostgres(odoo *odoov1alpha1.Odoo, secretN
 			},
 		},
 	}
+
+	if odoo.Spec.Metrics.Postgres {
+		sts.Spec.Template.Spec.Containers = append(sts.Spec.Template.Spec.Containers, corev1.Container{
+			Name:  "postgres-exporter",
+			Image: "quay.io/prometheuscommunity/postgres-exporter:v0.15.0",
+			Ports: []corev1.ContainerPort{
+				{ContainerPort: 9187, Name: metricsPortName},
+			},
+			Env: []corev1.EnvVar{
+				{Name: "DATA_SOURCE_USER", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: secretName}, Key: "user"}}},
+				{Name: "DATA_SOURCE_PASS", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: secretName}, Key: "password"}}},
+				// dbname is always "odoo" for a managed Postgres instance (see secretForPostgres).
+				{Name: "DATA_SOURCE_URI", Value: "localhost:5432/odoo?sslmode=disable"},
+			},
+			SecurityContext: &corev1.SecurityContext{
+				AllowPrivilegeEscalation: func() *bool { b := false; return &b }(),
+				Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+			},
+		})
+	}
+
 	_ = ctrl.SetControllerReference(odoo, sts, r.Scheme)
 	return sts
 }
@@ -2476,6 +2596,25 @@ func (r *OdooReconciler) statefulSetForRedis(odoo *odoov1alpha1.Odoo, redisSecre
 			},
 		},
 	}
+
+	if odoo.Spec.Metrics.Redis {
+		sts.Spec.Template.Spec.Containers = append(sts.Spec.Template.Spec.Containers, corev1.Container{
+			Name:  "redis-exporter",
+			Image: "oliver006/redis_exporter:v1.62.0",
+			Ports: []corev1.ContainerPort{
+				{ContainerPort: 9121, Name: metricsPortName},
+			},
+			Env: []corev1.EnvVar{
+				{Name: "REDIS_ADDR", Value: "redis://localhost:6379"},
+				{Name: "REDIS_PASSWORD", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: redisSecretName}, Key: "password"}}},
+			},
+			SecurityContext: &corev1.SecurityContext{
+				AllowPrivilegeEscalation: func() *bool { b := false; return &b }(),
+				Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+			},
+		})
+	}
+
 	_ = ctrl.SetControllerReference(odoo, sts, r.Scheme)
 	return sts
 }
@@ -2564,6 +2703,21 @@ func removeString(slice []string, s string) (result []string) {
 		result = append(result, item)
 	}
 	return
+}
+
+// effectiveModules returns odoo.Spec.Modules with the metrics-exporter addon folded into Install
+// when spec.metrics.odoo is enabled, without mutating the stored CR spec. Used both for building
+// module install/upgrade commands and for the modules-hash that triggers a reinstall Job when the
+// effective set of modules to install changes -- including when metrics.odoo is toggled on its own.
+func effectiveModules(odoo *odoov1alpha1.Odoo) odoov1alpha1.ModulesSpec {
+	modules := odoo.Spec.Modules
+	if odoo.Spec.Metrics.Odoo && indexOf(modules.Install, metricsExporterModuleName) == -1 {
+		install := make([]string, 0, len(modules.Install)+1)
+		install = append(install, modules.Install...)
+		install = append(install, metricsExporterModuleName)
+		modules.Install = install
+	}
+	return modules
 }
 
 // computeModulesHash generates a SHA256 hash of the Odoo ModulesSpec to detect changes.
