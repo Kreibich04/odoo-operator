@@ -156,8 +156,8 @@ type OdooSpec struct {
 	NetworkPolicy NetworkPolicySpec `json:"networkPolicy,omitempty"`
 
 	// Metrics optionally adds Prometheus exporter sidecars to the managed Postgres/Redis
-	// StatefulSets this CR creates. Odoo itself has no built-in Prometheus endpoint, so there's
-	// nothing to expose for the Odoo pods themselves. Disabled by default.
+	// StatefulSets this CR creates, and/or installs an addon that exposes Odoo's own metrics
+	// (see MetricsSpec.Odoo). Disabled by default.
 	// +optional
 	Metrics MetricsSpec `json:"metrics,omitempty"`
 
