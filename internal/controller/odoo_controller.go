@@ -1124,6 +1124,14 @@ func (r *OdooReconciler) reconcileNetworkPolicies(ctx context.Context, odoo *odo
 			} else if err != nil {
 				log.Error(err, "Failed to get NetworkPolicy", "NetworkPolicy.Name", np.Name)
 				return &ctrl.Result{}, err
+			} else if !equality.Semantic.DeepEqual(found.Spec, np.Spec) {
+				log.Info("Updating NetworkPolicy", "NetworkPolicy.Name", np.Name)
+				found.Spec = np.Spec
+				if err := r.Update(ctx, found); err != nil {
+					log.Error(err, "Failed to update NetworkPolicy", "NetworkPolicy.Name", np.Name)
+					return &ctrl.Result{}, err
+				}
+				return &ctrl.Result{Requeue: true}, nil
 			}
 		}
 	}
