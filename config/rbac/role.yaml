@@ -8,16 +8,31 @@ rules:
   - ""
   resources:
   - configmaps
+  verbs:
+  - create
+  - get
+  - list
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
   - persistentvolumeclaims
   - secrets
-  - services
   verbs:
   - create
   - delete
   - get
   - list
-  - patch
-  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - services
+  verbs:
+  - create
+  - get
+  - list
   - watch
 - apiGroups:
   - apps
@@ -25,10 +40,8 @@ rules:
   - statefulsets
   verbs:
   - create
-  - delete
   - get
   - list
-  - patch
   - update
   - watch
 - apiGroups:
@@ -40,22 +53,15 @@ rules:
   - delete
   - get
   - list
-  - patch
-  - update
   - watch
 - apiGroups:
   - cloud.alterway.fr
   resources:
   - odoobackups
   - odoorestores
-  - odoos
   verbs:
-  - create
-  - delete
   - get
   - list
-  - patch
-  - update
   - watch
 - apiGroups:
   - cloud.alterway.fr
@@ -73,17 +79,24 @@ rules:
   - odoos/status
   verbs:
   - get
-  - patch
   - update
+- apiGroups:
+  - cloud.alterway.fr
+  resources:
+  - odoos
+  verbs:
+  - get
+  - list
+  - update
+  - watch
 - apiGroups:
   - networking.k8s.io
   resources:
   - ingresses
+  - networkpolicies
   verbs:
   - create
   - delete
   - get
   - list
-  - patch
-  - update
   - watch

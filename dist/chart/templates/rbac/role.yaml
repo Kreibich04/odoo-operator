@@ -1,4 +1,5 @@
 {{- if .Values.rbac.enable }}
+{{- if not .Values.rbac.watchNamespaces }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -7,87 +8,19 @@ metadata:
     {{- include "chart.labels" . | nindent 4 }}
   name: operator-manager-role
 rules:
-- apiGroups:
-  - ""
-  resources:
-  - configmaps
-  - persistentvolumeclaims
-  - secrets
-  - services
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - apps
-  resources:
-  - statefulsets
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - batch
-  resources:
-  - jobs
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - cloud.alterway.fr
-  resources:
-  - odoobackups
-  - odoorestores
-  - odoos
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - cloud.alterway.fr
-  resources:
-  - odoobackups/finalizers
-  - odoorestores/finalizers
-  - odoos/finalizers
-  verbs:
-  - update
-- apiGroups:
-  - cloud.alterway.fr
-  resources:
-  - odoobackups/status
-  - odoorestores/status
-  - odoos/status
-  verbs:
-  - get
-  - patch
-  - update
-- apiGroups:
-  - networking.k8s.io
-  resources:
-  - ingresses
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
+{{- include "chart.managerRules" . | nindent 0 }}
+{{- else }}
+{{- range .Values.rbac.watchNamespaces }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  labels:
+    {{- include "chart.labels" $ | nindent 4 }}
+  name: operator-manager-role
+  namespace: {{ . }}
+rules:
+{{- include "chart.managerRules" $ | nindent 0 }}
+{{- end }}
+{{- end }}
 {{- end -}}

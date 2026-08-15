@@ -54,6 +54,16 @@ spec:
             type: object
           spec:
             properties:
+              allowDatabaseManager:
+                description: |-
+                  AllowDatabaseManager controls Odoo's list_db setting, which exposes the database
+                  manager (/web/database/manager, /web/database/selector). When the manager is exposed,
+                  it can create, duplicate, backup, restore, and drop databases, guarded only by the
+                  master key (see MasterKey). Defaults to false: list_db is set to False, and those
+                  routes 404 regardless of how Odoo is reached (Ingress, LoadBalancer, NodePort, ...).
+                  Note this does not gate the underlying db-service RPC methods (e.g. via /jsonrpc or
+                  /xmlrpc/2/db), which remain protected only by the master key either way.
+                type: boolean
               database:
                 description: |-
                   Database holds the connection details for the database.
@@ -143,6 +153,24 @@ spec:
                       If set to false, Odoo will log to stdout.
                     type: boolean
                 type: object
+              masterKey:
+                description: |-
+                  MasterKey configures the Odoo database manager master password (admin_passwd).
+                  If not set, a random one is generated and stored in a secret.
+                properties:
+                  secretRef:
+                    description: |-
+                      SecretRef is the name of a secret containing the master key under the 'masterkey' key.
+                      If neither Value nor SecretRef is set, the operator generates a random master key and
+                      stores it in a secret named "<odoo-name>-masterkey".
+                    type: string
+                  value:
+                    description: |-
+                      Value sets the master key literally in the resource spec. Kept for backwards
+                      compatibility. Since this ends up in the (unencrypted) generated ConfigMap, prefer
+                      SecretRef instead.
+                    type: string
+                type: object
               modules:
                 description: Modules defines the Odoo modules configuration.
                 properties:
@@ -188,6 +216,70 @@ spec:
                       - url
                       type: object
                     type: array
+                type: object
+              networkPolicy:
+                description: |-
+                  NetworkPolicy optionally restricts network traffic to/from the Odoo, managed Postgres, and
+                  managed Redis pods this CR creates. Disabled by default (no NetworkPolicy is created),
+                  matching the operator's behavior before this field existed.
+                properties:
+                  enabled:
+                    description: |-
+                      Enabled generates NetworkPolicies for the Odoo, managed Postgres, and managed Redis pods.
+                      Defaults to false: no NetworkPolicy is created, matching the operator's behavior before this
+                      field existed. Toggling this back to false deletes any NetworkPolicies it previously created.
+                    type: boolean
+                  ingressNamespaceSelector:
+                    description: |-
+                      IngressNamespaceSelector additionally allows traffic to the Odoo web ports (8069/8072) from
+                      pods in namespaces matching this label selector -- typically used to allow an ingress
+                      controller running in another namespace to reach Odoo. Traffic from the same namespace as
+                      the Odoo CR is always allowed regardless of this field. If unset, only same-namespace
+                      traffic is allowed on the web ports.
+                    properties:
+                      matchExpressions:
+                        description: matchExpressions is a list of label selector
+                          requirements. The requirements are ANDed.
+                        items:
+                          description: |-
+                            A label selector requirement is a selector that contains values, a key, and an operator that
+                            relates the key and values.
+                          properties:
+                            key:
+                              description: key is the label key that the selector
+                                applies to.
+                              type: string
+                            operator:
+                              description: |-
+                                operator represents a key's relationship to a set of values.
+                                Valid operators are In, NotIn, Exists and DoesNotExist.
+                              type: string
+                            values:
+                              description: |-
+                                values is an array of string values. If the operator is In or NotIn,
+                                the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                the values array must be empty. This array is replaced during a strategic
+                                merge patch.
+                              items:
+                                type: string
+                              type: array
+                              x-kubernetes-list-type: atomic
+                          required:
+                          - key
+                          - operator
+                          type: object
+                        type: array
+                        x-kubernetes-list-type: atomic
+                      matchLabels:
+                        additionalProperties:
+                          type: string
+                        description: |-
+                          matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                          map is equivalent to an element of matchExpressions, whose key field is "key", the
+                          operator is "In", and the values array contains only "value". The requirements are ANDed.
+                        type: object
+                    type: object
+                    x-kubernetes-map-type: atomic
                 type: object
               options:
                 additionalProperties:

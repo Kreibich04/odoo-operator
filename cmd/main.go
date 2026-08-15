@@ -20,6 +20,7 @@ import (
 	"crypto/tls"
 	"flag"
 	"os"
+	"strings"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -29,6 +30,7 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
@@ -61,10 +63,15 @@ func main() {
 	var probeAddr string
 	var secureMetrics bool
 	var enableHTTP2 bool
+	var watchNamespaces string
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
+	flag.StringVar(&watchNamespaces, "watch-namespaces", os.Getenv("WATCH_NAMESPACES"),
+		"Comma-separated list of namespaces to watch and manage Odoo resources in. "+
+			"If empty (the default), all namespaces are watched -- this requires cluster-wide RBAC. "+
+			"When set, the manager's cache and the RBAC it needs are both scoped to just these namespaces.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
@@ -154,11 +161,34 @@ func main() {
 		metricsServerOptions.KeyName = metricsCertKey
 	}
 
+	cacheOptions := cache.Options{}
+	if watchNamespaces != "" {
+		namespaces := strings.Split(watchNamespaces, ",")
+		defaultNamespaces := make(map[string]cache.Config, len(namespaces))
+		for _, ns := range namespaces {
+			ns = strings.TrimSpace(ns)
+			if ns == "" {
+				continue
+			}
+			defaultNamespaces[ns] = cache.Config{}
+		}
+		if len(defaultNamespaces) == 0 {
+			// An empty (but non-nil) DefaultNamespaces map tells controller-runtime to watch
+			// zero namespaces, i.e. do nothing, cluster-wide -- silently. Fail fast instead of
+			// starting an operator that will never see anything it manages.
+			setupLog.Error(nil, "--watch-namespaces was set but contained no valid namespace names", "value", watchNamespaces)
+			os.Exit(1)
+		}
+		setupLog.Info("restricting watched namespaces", "namespaces", defaultNamespaces)
+		cacheOptions.DefaultNamespaces = defaultNamespaces
+	}
+
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsServerOptions,
 		WebhookServer:          webhookServer,
 		HealthProbeBindAddress: probeAddr,
+		Cache:                  cacheOptions,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "3ff32c2f.cloud.alterway.fr",
 		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily

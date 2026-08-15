@@ -40,12 +40,16 @@ type OdooBackupReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-// +kubebuilder:rbac:groups=cloud.alterway.fr,resources=odoobackups,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=cloud.alterway.fr,resources=odoobackups/status,verbs=get;update;patch
+// The controller never creates/deletes OdooBackup CRs themselves (only humans do, via the
+// odoo_admin_role.yaml/odoo_editor_role.yaml personas), never Updates the base resource (only
+// its status), and never touches PersistentVolumeClaims directly (it only references a PVC name
+// in a Job's volume spec).
+// +kubebuilder:rbac:groups=cloud.alterway.fr,resources=odoobackups,verbs=get;list;watch
+// +kubebuilder:rbac:groups=cloud.alterway.fr,resources=odoobackups/status,verbs=get;update
 // +kubebuilder:rbac:groups=cloud.alterway.fr,resources=odoobackups/finalizers,verbs=update
-// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=cloud.alterway.fr,resources=odoos,verbs=get;list;watch
+// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=create;delete;get;list;watch
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch
-// +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch
 
 // setBackupCondition upserts a condition by Type (see upsertCondition), avoiding growing the
 // condition list on every reconcile while the backup sits in the same state.

@@ -25,6 +25,7 @@ import (
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
@@ -506,6 +507,78 @@ var _ = Describe("Odoo Controller", func() {
 			}
 			Expect(foundSSH).To(BeTrue(), "SSH Key volume should be mounted")
 			Expect(foundAddons).To(BeTrue(), "Addons PVC should be mounted")
+		})
+	})
+
+	Context("When NetworkPolicy is enabled", func() {
+		const resourceName = "test-netpol"
+		ctx := context.Background()
+		typeNamespacedName := types.NamespacedName{Name: resourceName, Namespace: "default"}
+
+		BeforeEach(func() {
+			odoo := &odoov1alpha1.Odoo{
+				ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: "default"},
+				Spec: odoov1alpha1.OdooSpec{
+					Size:  1,
+					Redis: odoov1alpha1.RedisSpec{Enabled: true},
+					NetworkPolicy: odoov1alpha1.NetworkPolicySpec{
+						Enabled: true,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, odoo)).To(Succeed())
+		})
+
+		AfterEach(func() {
+			resource := &odoov1alpha1.Odoo{}
+			if err := k8sClient.Get(ctx, typeNamespacedName, resource); err == nil {
+				_ = k8sClient.Delete(ctx, resource)
+			}
+		})
+
+		It("creates and removes NetworkPolicies for Odoo, Postgres, and Redis pods", func() {
+			controllerReconciler := &OdooReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			odoo := &odoov1alpha1.Odoo{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, odoo)).To(Succeed())
+
+			expectedNames := []string{resourceName + "-odoo-netpol", resourceName + "-postgres-netpol", resourceName + "-redis-netpol"}
+			for _, name := range expectedNames {
+				Eventually(func() error {
+					_, err := controllerReconciler.reconcileNetworkPolicies(ctx, odoo)
+					if err != nil {
+						return err
+					}
+					np := &networkingv1.NetworkPolicy{}
+					return k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: "default"}, np)
+				}, "10s", "1s").Should(Succeed(), "should create "+name)
+			}
+
+			By("disabling NetworkPolicy")
+			Expect(k8sClient.Get(ctx, typeNamespacedName, odoo)).To(Succeed())
+			odoo.Spec.NetworkPolicy.Enabled = false
+			Expect(k8sClient.Update(ctx, odoo)).To(Succeed())
+
+			for _, name := range expectedNames {
+				Eventually(func() error {
+					_, err := controllerReconciler.reconcileNetworkPolicies(ctx, odoo)
+					if err != nil {
+						return err
+					}
+					np := &networkingv1.NetworkPolicy{}
+					getErr := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: "default"}, np)
+					if getErr == nil {
+						return fmt.Errorf("%s still exists", name)
+					}
+					if !errors.IsNotFound(getErr) {
+						return getErr
+					}
+					return nil
+				}, "10s", "1s").Should(Succeed(), "should delete "+name)
+			}
 		})
 	})
 })
