@@ -172,6 +172,13 @@ func main() {
 			}
 			defaultNamespaces[ns] = cache.Config{}
 		}
+		if len(defaultNamespaces) == 0 {
+			// An empty (but non-nil) DefaultNamespaces map tells controller-runtime to watch
+			// zero namespaces, i.e. do nothing, cluster-wide -- silently. Fail fast instead of
+			// starting an operator that will never see anything it manages.
+			setupLog.Error(nil, "--watch-namespaces was set but contained no valid namespace names", "value", watchNamespaces)
+			os.Exit(1)
+		}
 		setupLog.Info("restricting watched namespaces", "namespaces", defaultNamespaces)
 		cacheOptions.DefaultNamespaces = defaultNamespaces
 	}
