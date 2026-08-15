@@ -573,6 +573,9 @@ var _ = Describe("Odoo Controller", func() {
 					if getErr == nil {
 						return fmt.Errorf("%s still exists", name)
 					}
+					if !errors.IsNotFound(getErr) {
+						return getErr
+					}
 					return nil
 				}, "10s", "1s").Should(Succeed(), "should delete "+name)
 			}
