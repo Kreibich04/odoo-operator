@@ -572,8 +572,17 @@ func (r *OdooReconciler) reconcileAddonsDownload(ctx context.Context, odoo *odoo
 		}
 	}
 
-	// Add the metrics-exporter addon repo if enabled (see MetricsSpec.Odoo)
-	if odoo.Spec.Metrics.Odoo {
+	// Add the metrics-exporter addon repo if enabled (see MetricsSpec.Odoo), unless the user
+	// already declared their own repo under that name (e.g. to pin a fork) -- adding both would
+	// clone the same TARGET_DIR twice, possibly with conflicting URL/version.
+	userHasMetricsExporterRepo := false
+	for _, customRepo := range odoo.Spec.Modules.Repositories {
+		if customRepo.Name == metricsExporterRepoName {
+			userHasMetricsExporterRepo = true
+			break
+		}
+	}
+	if odoo.Spec.Metrics.Odoo && !userHasMetricsExporterRepo {
 		odooVersion := odoo.Spec.Version
 		if odooVersion == "" {
 			odooVersion = "19" // Default version, matches the odoo:<version> image tag used elsewhere
